@@ -45,7 +45,7 @@ CHANNEL_COLORS: dict[int, str] = {
 class Config(NamedTuple):
     s2_diameter_um: float = 10.0      # S2 cell diameter in µm (typical 8–12 µm)
     aggregation_min_cells: int = 3    # aggregation threshold = this many S2 cells
-    morph_close_radius: int = 5       # disk radius for morphology close (pixels)
+    morph_close_radius_um: float = 1.65  # disk radius for morphology close in µm (converted to px at runtime)
     binary_threshold: int = 50        # fixed threshold for binarization after median (0–255)
     min_active_channels: int = 2      # reject regions with fewer active channels
     channel_colors: dict[int, str] = CHANNEL_COLORS
@@ -244,7 +244,7 @@ def pseudo_color_merge(
 
 
 def segment_occupancy(
-    img: np.ndarray, cfg: Config
+    img: np.ndarray, cfg: Config, pixel_size_um: float
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Cell occupancy estimation pipeline.  Expects a pre-filtered (median) image.
@@ -262,11 +262,13 @@ def segment_occupancy(
     mask_final  : uint8 binary after morphology close (used for detection)
     """
     _, mask_binary = cv2.threshold(img, cfg.binary_threshold, 255, cv2.THRESH_BINARY)
+    # 第2引数は 0 にし、フラグに cv2.THRESH_OTSU を追加します
+    # threshold_value, mask_binary = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
 
     # Fill enclosed dark regions (e.g. nucleus inside membrane ring)
     mask_filled = binary_fill_holes(mask_binary > 0).astype(np.uint8) * 255
 
-    r = cfg.morph_close_radius
+    r = max(1, round(cfg.morph_close_radius_um / pixel_size_um))
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
     mask_final = cv2.morphologyEx(mask_filled, cv2.MORPH_CLOSE, kernel)
 
@@ -464,7 +466,7 @@ def process_field(
             f"  5th–95th pct=[{pct5}, {pct95}]"
         )
 
-    mask_binary, mask_filled, mask_final = segment_occupancy(gray_merged_median, cfg)
+    mask_binary, mask_filled, mask_final = segment_occupancy(gray_merged_median, cfg, pixel_size_um)
 
     binary_center_slices = [
         cv2.threshold(slc, cfg.binary_threshold, 255, cv2.THRESH_BINARY)[1]
@@ -540,7 +542,9 @@ def process_nd2(nd2_path: Path, output_dir: Path, cfg: Config) -> None:
     print(f"  Global per-channel range: {[(f'{lo:.0f}', f'{hi:.0f}') for lo, hi in global_minmax]}")
 
     median_k = compute_median_kernel_size(pixel_size_um, cfg.s2_diameter_um)
+    morph_r_px = max(1, round(cfg.morph_close_radius_um / pixel_size_um))
     print(f"  Median filter kernel: {median_k}px  ({cfg.s2_diameter_um}µm / {pixel_size_um:.4f}µm/px ÷ 4)")
+    print(f"  Morph close radius  : {morph_r_px}px  ({cfg.morph_close_radius_um}µm / {pixel_size_um:.4f}µm/px)")
     print(f"  Binary threshold    : {cfg.binary_threshold}  (pass --binary-threshold N to change)")
 
     for field_id, field_data, field_sizes in iter_fields(data, sizes):
@@ -574,8 +578,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Minimum number of S2 cells to call a region an aggregation",
     )
     p.add_argument(
-        "--morph-close-radius", type=int, default=_d.morph_close_radius,
-        help="Disk radius (pixels) for morphology close after hole filling",
+        "--morph-close-radius", type=float, default=_d.morph_close_radius_um,
+        help="Disk radius (µm) for morphology close after hole filling",
     )
     p.add_argument(
         "--binary-threshold", type=int, default=_d.binary_threshold,
@@ -599,7 +603,7 @@ def main() -> None:
     cfg = Config(
         s2_diameter_um=args.s2_diameter,
         aggregation_min_cells=args.min_cells,
-        morph_close_radius=args.morph_close_radius,
+        morph_close_radius_um=args.morph_close_radius,
         binary_threshold=args.binary_threshold,
         min_active_channels=args.min_active_channels,
         save_debug=args.debug,
