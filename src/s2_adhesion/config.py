@@ -213,6 +213,33 @@ class OpticsConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class SaturationConfig:
+    """Detector clipping and dynamic-range adequacy checks.
+
+    Real acquisitions here were found with one channel clipping at the detector
+    maximum (FITC, ~13% of bright pixels at 4095) and another barely using the
+    range (mCherry, ~22%). Both silently corrupt intensity-derived metrics --
+    a clipped ring reads flatter than it is, a dim channel's background-relative
+    thresholds are noise -- so each cell/channel carries a saturation fraction
+    and a dynamic-range flag rather than pretending the intensities are clean.
+
+    ``detector_max``: the clipping value. ``None`` auto-detects it from the data
+    (a spike sitting exactly on a power-of-two-minus-one). Set it explicitly
+    (e.g. 4095 for a 12-bit detector, 65535 for 16-bit) when you know it, since
+    auto-detection fails on data that never actually reaches the ceiling.
+    """
+
+    detector_max: int | None = None
+    # A cell/channel with more than this fraction of its voxels at the detector
+    # max is flagged saturated; the policy for what that invalidates lives in the
+    # metrics layer.
+    saturated_fraction_threshold: float = 0.02
+    # A channel whose 99.9th percentile sits below this fraction of the detector
+    # range is flagged under-exposed -- too close to the noise floor to trust.
+    min_dynamic_range_fraction: float = 0.10
+
+
+@dataclass(frozen=True, slots=True)
 class ContactConfig:
     """How cell-cell interface area is measured.
 
@@ -298,6 +325,7 @@ class LocalizationConfig:
 @dataclass(frozen=True, slots=True)
 class MeasurementConfig:
     optics: OpticsConfig = field(default_factory=OpticsConfig)
+    saturation: SaturationConfig = field(default_factory=SaturationConfig)
     contact: ContactConfig = field(default_factory=ContactConfig)
     background: BackgroundConfig = field(default_factory=BackgroundConfig)
     localization: LocalizationConfig = field(default_factory=LocalizationConfig)

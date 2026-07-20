@@ -45,6 +45,7 @@ from . import intensity as intensity_metrics
 from . import localization as localization_metrics
 from . import populations as populations_metrics
 from . import radial as radial_metrics
+from . import saturation as saturation_metrics
 from . import surface as surface_metrics
 from . import nuclei as nuclei_metrics
 from . import qc as qc_metrics
@@ -71,6 +72,61 @@ def _truncated_ids(
     ``contracts.ObjectRecord.is_truncated``.
     """
     return {cid for cid in touches_xy if touches_xy[cid] or touches_z[cid]}
+
+
+
+# Radial-score keys whose quantitative value is destroyed by a clipped core.
+_RADIAL_SCORE_KEYS = (
+    "radial_shell_score",
+    "peripheral_signal_fraction",
+    "radial_peak_position",
+)
+
+
+def _apply_saturation_gates(
+    radial_rows: dict[int, dict[str, Scalar]],
+    coloc_rows: dict[int, dict[str, Scalar]],
+    saturation_rows: dict[int, dict[str, Scalar]],
+    channel_ids,
+    coloc_pairs,
+) -> None:
+    """Null or flag intensity-derived metrics per each cell's saturation status.
+
+    Follows the reviewed policy: a clipped CORE makes the ring/interior score
+    indeterminate (nulled, but a clipped core is itself positive evidence of
+    interior signal, recorded as a reason); a clipped SHELL leaves the score as a
+    valid downward-biased LOWER bound (kept, flagged); material saturation in
+    either channel of a colocalization pair nulls Pearson/Manders. Mutates the
+    row dicts in place.
+    """
+    for cid, sat_row in saturation_rows.items():
+        radial = radial_rows.get(cid)
+        if radial is not None:
+            for channel_id in channel_ids:
+                reliability = saturation_metrics.localization_reliability(
+                    sat_row, channel_id
+                )
+                radial[f"ch.{channel_id}.localization_reliability"] = reliability
+                if reliability == saturation_metrics.LOC_INDETERMINATE:
+                    for key in _RADIAL_SCORE_KEYS:
+                        full = f"ch.{channel_id}.{key}"
+                        if full in radial:
+                            radial[full] = None
+                    radial[f"ch.{channel_id}.radial_profile_qc"] = (
+                        "saturated_core_localization_indeterminate"
+                    )
+
+        coloc = coloc_rows.get(cid)
+        if coloc is not None:
+            for pair in coloc_pairs:
+                if not saturation_metrics.colocalization_trustworthy(
+                    sat_row, pair.signal_channel_id, pair.reference_channel_id
+                ):
+                    prefix = f"{pair.signal_channel_id}_vs_{pair.reference_channel_id}"
+                    for key in list(coloc):
+                        if key.startswith(prefix + "__"):
+                            coloc[key] = None
+                    coloc[f"{prefix}__colocalization_qc"] = "saturated_channel"
 
 
 def compute_measurements(
@@ -169,6 +225,7 @@ def compute_measurements(
     intensity_rows: dict[int, dict[str, Scalar]] = {}
     radial_rows: dict[int, dict[str, Scalar]] = {}
     population_rows: dict[int, dict[str, Scalar]] = {}
+    saturation_rows: dict[int, dict[str, Scalar]] = {}
     nuclei_rows: dict[int, dict[str, Scalar]] = {}
     shell_rows: dict[int, dict[str, Scalar]] = {}
     coloc_rows: dict[int, dict[str, Scalar]] = {}
@@ -251,6 +308,35 @@ def compute_measurements(
                 cells, geometry, channels, config.localization, background_stats=background_stats
             )
 
+        # ── saturation: detect clipping and gate the intensity-derived metrics ──
+        # Measured on RAW integer channels (pre background-subtraction), because
+        # clipping only shows as exact-ceiling values. Real acquisitions here
+        # clip (FITC) and under-expose (mCherry), silently corrupting the ring/
+        # interior score and colocalization -- so those are nulled or flagged per
+        # the saturation status rather than reported as clean.
+        detector_max, dmax_provenance = saturation_metrics.resolve_detector_max(
+            image.data, config.saturation.detector_max
+        )
+        if "uncertain" in dmax_provenance:
+            warnings.append(
+                f"detector_max auto-detected as {detector_max} with low "
+                "confidence (data never reaches a standard ceiling); set "
+                "measurement.saturation.detector_max explicitly to be sure"
+            )
+        raw_channels = {
+            c.channel_id: image.channel(c.channel_id)
+            for c in image.channels
+            if ChannelRole.IGNORE not in c.roles
+        }
+        saturation_rows = saturation_metrics.compute_saturation(
+            cells, raw_channels, image.channels, geometry, detector_max,
+            inner_shell_width_um=config.localization.inner_shell_width_um,
+        )
+        _apply_saturation_gates(
+            radial_rows, coloc_rows, saturation_rows, raw_channels.keys(),
+            config.localization.colocalization_pairs,
+        )
+
         if config.localization.decision.enabled:
             warnings.append(
                 "localization_decision_skipped: "
@@ -281,6 +367,7 @@ def compute_measurements(
             metrics_sources.append(radial_rows.get(cid, {}))
             metrics_sources.append(coloc_rows.get(cid, {}))
             metrics_sources.append(population_rows.get(cid, {}))
+            metrics_sources.append(saturation_rows.get(cid, {}))
 
         objects.append(
             records.build_object_record(
