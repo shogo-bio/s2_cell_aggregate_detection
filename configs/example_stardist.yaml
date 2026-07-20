@@ -1,0 +1,87 @@
+# StarDist variant of configs/example.yaml.
+#
+# Run the two on the SAME extracted image artifacts to compare segmentation
+# backends on identical data:
+#
+#   s2-adhesion extract  --config configs/example.yaml          data.nd2 artifacts/
+#   s2-adhesion segment  --config configs/example.yaml          artifacts/ labels_cellpose/
+#   s2-adhesion segment  --config configs/example_stardist.yaml artifacts/ labels_stardist/
+#   s2-adhesion measure  --config configs/example.yaml          labels_cellpose/ out_cellpose/ --images artifacts/
+#   s2-adhesion measure  --config configs/example.yaml          labels_stardist/ out_stardist/ --images artifacts/
+#
+# StarDist needs its own environment (TensorFlow) -- see docs/stardist_notes.md.
+
+schema_version: s2-pipeline-config/v1
+analysis_backend: ml_instance_3d
+
+channels:
+  # PLACEHOLDER roles, exactly as in example.yaml. Confirm against the
+  # experimental record before trusting anything derived from them.
+  - channel_id: membrane
+    source_index: 0
+    roles: [membrane]
+  - channel_id: signal
+    source_index: 1
+    roles: [signal]
+  - channel_id: nucleus
+    source_index: 2
+    roles: [nucleus]
+
+segmentation:
+  strategy: direct_stardist
+
+  # StarDist 3D predicts from ONE intensity volume. Give it the channel whose
+  # signal marks cell outlines -- for a transmembrane construct the bright shell
+  # IS the boundary the model predicts ray distances to.
+  input_channel_ids: [membrane]
+
+  model:
+    # Exactly one of pretrained_name / custom_model_dir must be set.
+    #
+    # '3D_demo' is the ONLY published StarDist3D model and it was trained on
+    # NUCLEI at anisotropy (2, 1, 1). It is a plumbing check, not an analysis:
+    # on membrane-shell data it over-segments heavily. The backend warns about
+    # both facts on every run.
+    pretrained_name: 3D_demo
+
+    # For real work, train or fine-tune and point here instead:
+    # custom_model_dir: ../models/stardist
+    # custom_model_name: s2_membrane_3d
+
+    # StarDist has NO predict-time anisotropy parameter -- anisotropy is baked
+    # into the trained model. So the volume must be sampled the way the model
+    # expects. Leave this on for a model trained on isotropic data; turn it off
+    # when the model was trained at this experiment's own anisotropy.
+    resample_isotropic: true
+
+    normalization:
+      lower_percentile: 1.0
+      upper_percentile: 99.8
+
+    # Leave unset to use the thresholds stored with the model.
+    # prob_threshold: 0.5
+    # nms_threshold: 0.3
+
+    # Set if a field does not fit in memory, e.g. [2, 4, 4].
+    # n_tiles_zyx: [2, 4, 4]
+
+  min_cell_volume_um3: 50.0
+  fill_internal_holes: true
+  split_disconnected_labels: true
+
+measurement:
+  optics:
+    # Measure these with sub-resolution beads under your own objective.
+    axial_fwhm_um: 0.7
+    lateral_fwhm_um: 0.25
+  contact:
+    estimator: marching_cubes
+    resample_isotropic_before_contact: true
+    minimum_contact_area_um2: 1.0
+  localization:
+    decision:
+      enabled: false
+
+artifacts:
+  format: zarr
+  verify_content_hashes: true
