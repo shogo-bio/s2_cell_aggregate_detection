@@ -1,0 +1,76 @@
+# Example pipeline configuration.
+#
+# IMPORTANT: every channel role below is a PLACEHOLDER. Nobody has yet documented
+# what the three channels in the real nd2 files actually stain -- the original
+# script only assigned them display colours (green/red/blue). Run
+#   s2-adhesion inspect <file.nd2>
+# and confirm the roles against the experimental record before trusting any
+# nucleus-, organelle- or localization-derived number.
+
+schema_version: s2-pipeline-config/v1
+analysis_backend: ml_instance_3d
+
+channels:
+  - channel_id: nucleus
+    source_index: 2
+    roles: [nucleus]
+    source_name: "PLACEHOLDER - confirm against acquisition metadata"
+
+  - channel_id: membrane
+    source_index: 0
+    roles: [membrane]
+    source_name: "PLACEHOLDER - confirm against acquisition metadata"
+
+  - channel_id: signal
+    source_index: 1
+    roles: [signal]
+    source_name: "PLACEHOLDER - confirm against acquisition metadata"
+
+segmentation:
+  # Preferred whenever a real nuclear marker exists. Nuclei are well separated
+  # and near-convex, so they seed reliably; touching cell bodies inside a dense
+  # aggregate -- exactly the region of interest -- do not segment reliably on
+  # their own. Switch to direct_cellpose only if no nuclear marker exists.
+  strategy: nucleus_seeded_watershed
+  nucleus_channel_id: nucleus
+  boundary_channel_ids: [membrane]
+  extent_mode: adaptive_intensity
+  gaussian_sigma_um: 0.5
+  min_nucleus_volume_um3: 20.0
+  min_cell_volume_um3: 50.0
+  max_nuclei_per_cell: 1
+  seed_model:
+    package_major: 3          # cellpose 4 (cpsam) is ~290x slower on this host
+    model_name: nuclei
+    device: cpu
+    diameter_um: 5.0
+
+measurement:
+  contact:
+    estimator: marching_cubes
+    resample_isotropic_before_contact: true
+    minimum_contact_area_um2: 1.0
+  background:
+    mode: outside_cells_median_mad
+    mad_multiplier: 3.0
+  localization:
+    # Bin edges must not be finer than the optical resolution they claim to
+    # resolve (~0.5-0.8 um axially), or the profile invents precision.
+    signed_distance_bin_edges_um: [-3.0, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 3.0]
+    inner_shell_width_um: 1.0
+    outer_shell_width_um: 1.0
+    decision:
+      enabled: false          # keep off until calibrated on real controls
+
+artifacts:
+  format: zarr
+  verify_content_hashes: true
+
+# Retained so the original 2D threshold pipeline can be run on identical fields
+# and compared against the 3D result.
+legacy:
+  threshold_uint8: 50
+  s2_diameter_um: 10.0
+  minimum_cell_equivalents: 3.0
+  closing_radius_um: 1.65
+  minimum_active_channels: 2
