@@ -440,7 +440,9 @@ class MeasurementBundle:
     contacts: tuple[ContactRecord, ...] = ()
     aggregates: tuple[AggregateRecord, ...] = ()
     localization_profiles: tuple[LocalizationProfileRecord, ...] = ()
-    field_summary: FieldSummaryRecord | None = None
+    # One per field. A single-field bundle from the engine has zero or one; a
+    # merged whole-run bundle has one per field with a mixing index.
+    field_summaries: tuple[FieldSummaryRecord, ...] = ()
     warnings: tuple[str, ...] = ()
 
 

@@ -275,5 +275,8 @@ def merge_bundles(*bundles: MeasurementBundle) -> MeasurementBundle:
         localization_profiles=tuple(
             p for b in bundles for p in b.localization_profiles
         ),
+        field_summaries=tuple(
+            fs for b in bundles for fs in b.field_summaries
+        ),
         warnings=tuple(w for b in bundles for w in b.warnings),
     )

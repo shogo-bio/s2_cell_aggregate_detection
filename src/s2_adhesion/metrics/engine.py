@@ -400,15 +400,19 @@ def compute_measurements(
         field_values.update(
             populations_metrics.compute_mixing(contact_records, cell_population)
         )
-    field_summary = records.build_field_summary_record(
-        dataset_id=dataset_id, field_id=field_id, metrics=[field_values]
-    ) if field_values else None
+    field_summaries: tuple = ()
+    if field_values:
+        field_summaries = (
+            records.build_field_summary_record(
+                dataset_id=dataset_id, field_id=field_id, metrics=[field_values]
+            ),
+        )
 
     return MeasurementBundle(
         objects=tuple(objects),
         contacts=tuple(contact_records),
         aggregates=tuple(aggregate_records),
         localization_profiles=tuple(localization_profiles),
-        field_summary=field_summary,
+        field_summaries=field_summaries,
         warnings=tuple(warnings),
     )

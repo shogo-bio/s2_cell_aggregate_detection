@@ -444,16 +444,23 @@ def write_metrics_manifest(bundle: MeasurementBundle, path: Path | str) -> Path:
 
 
 def write_field_summary_csv(
-    field_summary: FieldSummaryRecord | None, path: Path | str
+    field_summaries: Sequence[FieldSummaryRecord] | FieldSummaryRecord | None,
+    path: Path | str,
 ) -> list[str]:
-    """Write ``field_summary.csv``: one row of whole-field statistics.
+    """Write ``field_summary.csv``: one row per field of whole-field statistics.
 
     The adhesion mixing index and its contact-pair counts live here -- a field
-    has one value each, not one per cell. ``None`` (no populations configured, so
-    nothing to summarise) still writes a headers-only file so downstream code can
-    rely on the path existing.
+    has one value each, not one per cell. Accepts a sequence (one row per field
+    in a whole-run write), a single record, or ``None`` (no populations
+    configured); the last still writes a headers-only file so downstream code
+    can rely on the path existing.
     """
-    records = [field_summary] if field_summary is not None else []
+    if field_summaries is None:
+        records: list[FieldSummaryRecord] = []
+    elif isinstance(field_summaries, FieldSummaryRecord):
+        records = [field_summaries]
+    else:
+        records = list(field_summaries)
     metric_keys = _sorted_metric_keys(r.values for r in records)
     columns = ["dataset_id", "field_id"] + metric_keys
 
@@ -487,6 +494,6 @@ def write_measurement_bundle(bundle: MeasurementBundle, output_dir: Path | str) 
     write_contacts_csv(bundle.contacts, paths["contacts"])
     write_aggregates_csv(bundle.aggregates, paths["aggregates"])
     write_localization_profiles_csv(bundle.localization_profiles, paths["localization_profiles"])
-    write_field_summary_csv(bundle.field_summary, paths["field_summary"])
+    write_field_summary_csv(bundle.field_summaries, paths["field_summary"])
     write_metrics_manifest(bundle, paths["metrics_manifest"])
     return paths
