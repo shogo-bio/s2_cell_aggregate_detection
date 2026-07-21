@@ -1,7 +1,39 @@
 venv/
-debug*/
-output*/
-*.nd2
-# Pythonのキャッシュフォルダとファイルを一括除外
+.venv/
 __pycache__/
 *.pyc
+
+# ─── Microscopy data: never commit ──────────────────────────────────────────
+# Raw acquisitions
+*.nd2
+*.ND2
+*.lif
+*.czi
+*.oib
+*.oif
+data/
+raw/
+
+# Derived image and label artifacts. These are just the microscopy data in
+# another container -- an image.ome.zarr IS the acquisition, so it must be
+# ignored as firmly as the .nd2 it came from.
+*.ome.zarr/
+*.zarr/
+*.ome.tif
+*.ome.tiff
+artifacts/
+labels/
+
+# Analysis outputs
+debug*/
+output*/
+results/
+*_aggregations.csv
+
+# ─── Local environment ──────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+build/
+dist/
