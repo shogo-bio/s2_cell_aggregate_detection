@@ -401,6 +401,18 @@ def _cmd_measure(args: argparse.Namespace) -> int:
 # ─── run ────────────────────────────────────────────────────────────────────
 
 
+def _cmd_review(args: argparse.Namespace) -> int:
+    from .commands.review import review_run
+
+    written = review_run(args.run_dir, verify_hashes=not args.no_verify)
+    if not written:
+        print(f"no field artifacts found under {args.run_dir}", file=sys.stderr)
+        return 1
+    for pth in written:
+        print(pth)
+    return 0
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     from . import pipeline
     from .config import load_config
@@ -527,6 +539,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Only process the first N fields (try the pipeline on a couple first).",
     )
     p_run.set_defaults(handler=_cmd_run)
+
+    p_review = sub.add_parser(
+        "review",
+        help="Render per-field comparison images (original + segmentation outline) "
+             "from a completed run directory.",
+    )
+    p_review.add_argument("run_dir", type=Path, help="A pipeline run output directory.")
+    p_review.add_argument(
+        "--no-verify", action="store_true",
+        help="Skip artifact content-hash verification when reading.",
+    )
+    p_review.set_defaults(handler=_cmd_review)
 
     return parser
 
