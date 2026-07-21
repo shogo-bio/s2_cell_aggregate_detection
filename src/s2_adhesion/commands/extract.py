@@ -47,10 +47,13 @@ def extract(
     *,
     source: VolumeSource | None = None,
     writer: ImageVolumeWriter | None = None,
+    max_fields: int | None = None,
 ) -> list[Path]:
     """Read every field of ``nd2_path`` and write each as an image artifact.
 
     Returns the list of written artifact paths, one per field, in field order.
+    ``max_fields`` limits extraction to the first N fields -- for trying the
+    whole pipeline on a couple of fields before committing to a long full run.
     ``source`` and ``writer`` are injection points for testing; production
     callers leave both as their defaults (a real :class:`ND2Source` and the
     lazily-imported zarr writer).
@@ -63,8 +66,12 @@ def extract(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    field_ids = list(vol_source.field_ids())
+    if max_fields is not None:
+        field_ids = field_ids[:max_fields]
+
     written: list[Path] = []
-    for field_id in vol_source.field_ids():
+    for field_id in field_ids:
         volume = vol_source.read_field(field_id)
         dest = output_dir / f"{field_id}.zarr"
         written_path = write(

@@ -358,7 +358,7 @@ def test_segment_dispatches_to_real_segment_command_with_correct_args(tmp_path, 
 def test_extract_dispatches_to_real_extract_command(tmp_path, monkeypatch):
     calls = []
 
-    def fake_extract(*, nd2_path, output_dir, config):
+    def fake_extract(*, nd2_path, output_dir, config, max_fields=None):
         calls.append((Path(nd2_path), Path(output_dir), config))
         return [Path(output_dir) / "field000.zarr"]
 

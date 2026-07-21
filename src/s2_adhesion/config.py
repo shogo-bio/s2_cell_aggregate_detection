@@ -65,6 +65,13 @@ class CellposeEvalConfig:
     tile_overlap: float | None = None
     augment: bool = False
     batch_size: int = 8
+    # 2.5D stitching. When set, cellpose segments each Z plane in 2D (in the fine
+    # XY resolution) and stitches the planes into 3D instances by IoU >= this
+    # value, instead of a native 3D flow (do_3D). For strongly anisotropic
+    # stacks -- this data is 2 um in Z vs 0.63 um in XY -- 2.5D is both faster
+    # and more reliable, because it never asks cellpose to resolve shapes along
+    # the poorly sampled axis. ``None`` uses native 3D (do_3D=True).
+    stitch_threshold: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

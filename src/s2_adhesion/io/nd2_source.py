@@ -79,11 +79,17 @@ class ND2Source:
         *,
         dataset_id: str | None = None,
         reader_factory: ReaderFactory = _default_reader_factory,
+        max_fields: int | None = None,
     ) -> None:
         self._path = Path(path)
         self._config = config
         self._dataset_id = dataset_id if dataset_id is not None else self._path.stem
         self._reader_factory = reader_factory
+        # Cap the number of fields exposed, so the whole pipeline can be tried on
+        # a couple of fields before a long full run. Field ids keep their normal
+        # zero-padded width (based on the true field count), so a later full run
+        # produces the same ids for the same fields.
+        self._max_fields = max_fields
         self._field_ids: tuple[str, ...] | None = None
 
     def field_ids(self) -> Sequence[str]:
@@ -92,7 +98,10 @@ class ND2Source:
                 sizes = dict(reader.sizes)
             n_fields = sizes.get("P", 1)
             width = max(3, len(str(max(n_fields - 1, 0))))
-            self._field_ids = tuple(f"field{i:0{width}d}" for i in range(n_fields))
+            ids = tuple(f"field{i:0{width}d}" for i in range(n_fields))
+            if self._max_fields is not None:
+                ids = ids[: self._max_fields]
+            self._field_ids = ids
         return self._field_ids
 
     def read_field(self, field_id: str) -> ImageVolume:

@@ -74,12 +74,18 @@ class CellposeV4Engine:
         if eval_cfg.tile_overlap is not None:
             optional["tile_overlap"] = eval_cfg.tile_overlap
 
+        # 2.5D stitching vs native 3D -- see cellpose_v3 for the rationale.
+        if eval_cfg.stitch_threshold is not None:
+            optional["do_3D"] = False
+            optional["stitch_threshold"] = eval_cfg.stitch_threshold
+        else:
+            optional["do_3D"] = True
+            optional["anisotropy"] = prepared.anisotropy
+
         masks, flows, styles = self._model.eval(
             volume,
             z_axis=0,
             channel_axis=channel_axis,
-            do_3D=True,
-            anisotropy=prepared.anisotropy,
             diameter=prepared.diameter_px,
             flow_threshold=eval_cfg.flow_threshold,
             cellprob_threshold=eval_cfg.cellprob_threshold,

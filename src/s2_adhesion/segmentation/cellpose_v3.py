@@ -86,12 +86,20 @@ class CellposeV3Engine:
         if eval_cfg.tile_overlap is not None:
             optional["tile_overlap"] = eval_cfg.tile_overlap
 
+        # 2.5D stitching vs native 3D. Stitching segments each plane in 2D and
+        # joins planes by IoU -- better on strongly anisotropic stacks, where a
+        # native 3D flow must resolve shape along the coarse Z axis.
+        if eval_cfg.stitch_threshold is not None:
+            optional["do_3D"] = False
+            optional["stitch_threshold"] = eval_cfg.stitch_threshold
+        else:
+            optional["do_3D"] = True
+            optional["anisotropy"] = prepared.anisotropy
+
         masks, flows, styles, diams = self._model.eval(
             volume,
             channels=channels,
-            do_3D=True,
             z_axis=0,
-            anisotropy=prepared.anisotropy,
             diameter=prepared.diameter_px,
             flow_threshold=eval_cfg.flow_threshold,
             cellprob_threshold=eval_cfg.cellprob_threshold,

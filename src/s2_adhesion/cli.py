@@ -347,7 +347,10 @@ def _cmd_extract(args: argparse.Namespace) -> int:
     extract = _load_command("s2_adhesion.commands.extract", "extract")
     # commands.extract.extract(nd2_path, output_dir, config, *, source=None,
     # writer=None) -> list[Path], one artifact per field.
-    written = extract(nd2_path=args.nd2_path, output_dir=args.output_dir, config=config)
+    written = extract(
+        nd2_path=args.nd2_path, output_dir=args.output_dir, config=config,
+        max_fields=args.max_fields,
+    )
     for p in written:
         print(p)
     return 0
@@ -409,7 +412,10 @@ def _cmd_run(args: argparse.Namespace) -> int:
     run_id = uuid.uuid4().hex
     started_utc = run_manifest.now_utc_iso()
     manifest_path = output_dir / "run_manifest.json"
-    source = ND2Source(args.nd2_path, config, dataset_id=args.dataset_id)
+    source = ND2Source(
+        args.nd2_path, config, dataset_id=args.dataset_id,
+        max_fields=args.max_fields,
+    )
 
     try:
         artifacts = pipeline.run_pipeline(
@@ -473,6 +479,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_extract.add_argument("nd2_path", type=Path)
     p_extract.add_argument("output_dir", type=Path)
     p_extract.add_argument("--config", type=Path, required=True)
+    p_extract.add_argument(
+        "--max-fields", type=int, default=None,
+        help="Only extract the first N fields.",
+    )
     p_extract.set_defaults(handler=_cmd_extract)
 
     p_segment = sub.add_parser(
@@ -512,6 +522,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("output_dir", type=Path)
     p_run.add_argument("--config", type=Path, required=True)
     p_run.add_argument("--dataset-id", type=str, default=None)
+    p_run.add_argument(
+        "--max-fields", type=int, default=None,
+        help="Only process the first N fields (try the pipeline on a couple first).",
+    )
     p_run.set_defaults(handler=_cmd_run)
 
     return parser
