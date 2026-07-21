@@ -550,3 +550,47 @@ def test_importing_records_and_tables_does_not_import_torch_or_cellpose():
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "OK" in result.stdout
+
+
+# ─── field_summary.csv (mixing index) ────────────────────────────────────────
+
+
+def test_field_summary_csv_writes_mixing_columns(tmp_path):
+    import pandas as pd
+
+    from s2_adhesion.contracts import FieldSummaryRecord
+    from s2_adhesion.io.tables import write_field_summary_csv
+
+    rec = FieldSummaryRecord(
+        dataset_id="d",
+        field_id="f0",
+        values={
+            "mixing_index": 1.8,
+            "heterotypic_fraction": 0.6,
+            "n_qualifying_contacts": 10,
+            "mixing_qc": None,
+        },
+    )
+    path = tmp_path / "field_summary.csv"
+    columns = write_field_summary_csv(rec, path)
+    assert columns[:2] == ["dataset_id", "field_id"]
+    assert "mixing_index" in columns
+
+    df = pd.read_csv(path)
+    assert len(df) == 1
+    assert df.iloc[0]["mixing_index"] == 1.8
+    assert df.iloc[0]["n_qualifying_contacts"] == 10
+    # None serialises as an empty field, read back as NaN, never "None"/0.
+    assert pd.isna(df.iloc[0]["mixing_qc"])
+
+
+def test_field_summary_csv_none_writes_headers_only(tmp_path):
+    import pandas as pd
+
+    from s2_adhesion.io.tables import write_field_summary_csv
+
+    path = tmp_path / "field_summary.csv"
+    write_field_summary_csv(None, path)  # no populations configured
+    df = pd.read_csv(path)
+    assert len(df) == 0
+    assert list(df.columns) == ["dataset_id", "field_id"]

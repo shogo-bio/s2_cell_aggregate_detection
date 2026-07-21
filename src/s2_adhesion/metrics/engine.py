@@ -385,10 +385,30 @@ def compute_measurements(
             )
         )
 
+    # ── field-level summary: the adhesion mixing index ─────────────────────
+    # A single number per field (how much the cell populations touch across
+    # groups vs within), so it belongs here rather than in objects.csv. Computed
+    # only when populations were assigned -- i.e. a channel carried a population
+    # label -- otherwise there is nothing to mix.
+    field_values: dict[str, Scalar] = {}
+    if population_rows:
+        cell_population = {
+            cid: str(row.get("population"))
+            for cid, row in population_rows.items()
+            if row.get("population") is not None
+        }
+        field_values.update(
+            populations_metrics.compute_mixing(contact_records, cell_population)
+        )
+    field_summary = records.build_field_summary_record(
+        dataset_id=dataset_id, field_id=field_id, metrics=[field_values]
+    ) if field_values else None
+
     return MeasurementBundle(
         objects=tuple(objects),
         contacts=tuple(contact_records),
         aggregates=tuple(aggregate_records),
         localization_profiles=tuple(localization_profiles),
+        field_summary=field_summary,
         warnings=tuple(warnings),
     )

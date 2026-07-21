@@ -59,6 +59,7 @@ from ..contracts import (
     SCHEMA_VERSION_RECORDS,
     AggregateRecord,
     ContactRecord,
+    FieldSummaryRecord,
     LocalizationProfileRecord,
     MeasurementBundle,
     ObjectRecord,
@@ -71,6 +72,7 @@ __all__ = [
     "write_contacts_csv",
     "write_aggregates_csv",
     "write_localization_profiles_csv",
+    "write_field_summary_csv",
     "build_metrics_manifest",
     "write_metrics_manifest",
     "write_measurement_bundle",
@@ -441,6 +443,28 @@ def write_metrics_manifest(bundle: MeasurementBundle, path: Path | str) -> Path:
 # ─── everything at once ─────────────────────────────────────────────────────
 
 
+def write_field_summary_csv(
+    field_summary: FieldSummaryRecord | None, path: Path | str
+) -> list[str]:
+    """Write ``field_summary.csv``: one row of whole-field statistics.
+
+    The adhesion mixing index and its contact-pair counts live here -- a field
+    has one value each, not one per cell. ``None`` (no populations configured, so
+    nothing to summarise) still writes a headers-only file so downstream code can
+    rely on the path existing.
+    """
+    records = [field_summary] if field_summary is not None else []
+    metric_keys = _sorted_metric_keys(r.values for r in records)
+    columns = ["dataset_id", "field_id"] + metric_keys
+
+    def rows() -> Iterable[list[Scalar]]:
+        for r in records:
+            yield [r.dataset_id, r.field_id] + [r.values.get(k) for k in metric_keys]
+
+    _write_csv(path, columns, rows())
+    return columns
+
+
 def write_measurement_bundle(bundle: MeasurementBundle, output_dir: Path | str) -> dict[str, Path]:
     """Write all four CSVs plus ``metrics_manifest.json`` into ``output_dir``.
 
@@ -456,11 +480,13 @@ def write_measurement_bundle(bundle: MeasurementBundle, output_dir: Path | str) 
         "contacts": output_dir / "contacts.csv",
         "aggregates": output_dir / "aggregates.csv",
         "localization_profiles": output_dir / "localization_profiles.csv",
+        "field_summary": output_dir / "field_summary.csv",
         "metrics_manifest": output_dir / "metrics_manifest.json",
     }
     write_objects_csv(bundle.objects, paths["objects"])
     write_contacts_csv(bundle.contacts, paths["contacts"])
     write_aggregates_csv(bundle.aggregates, paths["aggregates"])
     write_localization_profiles_csv(bundle.localization_profiles, paths["localization_profiles"])
+    write_field_summary_csv(bundle.field_summary, paths["field_summary"])
     write_metrics_manifest(bundle, paths["metrics_manifest"])
     return paths

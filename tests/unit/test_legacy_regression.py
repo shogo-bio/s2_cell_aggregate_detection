@@ -451,7 +451,8 @@ def test_backend_emits_object_records_matching_direct_pipeline_and_keeps_border_
 
     assert artifacts.backend_id == "legacy_threshold_2d"
     assert set(artifacts.written_paths) == {
-        "objects", "contacts", "aggregates", "localization_profiles", "metrics_manifest",
+        "objects", "contacts", "aggregates", "localization_profiles",
+        "field_summary", "metrics_manifest",
     }
     objects_csv = artifacts.written_paths["objects"]
     assert objects_csv.exists()

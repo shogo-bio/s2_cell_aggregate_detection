@@ -31,6 +31,7 @@ from ..contracts import (
     AggregateRecord,
     ContactEstimator,
     ContactRecord,
+    FieldSummaryRecord,
     LocalizationProfileRecord,
     MeasurementBundle,
     ObjectRecord,
@@ -39,6 +40,7 @@ from ..contracts import (
 from ..errors import ContractViolation
 
 __all__ = [
+    "build_field_summary_record",
     "DuplicateMetricKeyError",
     "InvalidMetricValueError",
     "merge_metric_values",
@@ -145,6 +147,21 @@ def build_object_record(
         values=merge_metric_values(*metrics),
         aggregate_id=aggregate_id,
         segmentation_run_id=segmentation_run_id,
+    )
+
+
+
+def build_field_summary_record(
+    *,
+    dataset_id: str,
+    field_id: str,
+    metrics: Sequence[Mapping[str, Scalar]] = (),
+) -> FieldSummaryRecord:
+    """Assemble one field-level summary row (e.g. the adhesion mixing index)."""
+    return FieldSummaryRecord(
+        dataset_id=dataset_id,
+        field_id=field_id,
+        values=merge_metric_values(*metrics),
     )
 
 

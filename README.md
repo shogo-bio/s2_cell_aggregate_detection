@@ -101,6 +101,7 @@ recorded reason.
 | `contacts.csv` | touching cell pair — contact area, interface orientation, reliability, stability |
 | `aggregates.csv` | connected component — cell count, packing fraction, coordination, hull metrics |
 | `localization_profiles.csv` | cell × channel × reference × signed-distance bin |
+| `field_summary.csv` | field — adhesion mixing index and homotypic/heterotypic contact counts (when populations are configured) |
 | `metrics_manifest.json` | every column, with its unit, dtype, nullability and definition |
 | `run_manifest.json` | config hash, versions, inputs, outputs, warnings, completion status |
 

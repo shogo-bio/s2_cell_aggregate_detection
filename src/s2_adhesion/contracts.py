@@ -419,6 +419,20 @@ class LocalizationProfileRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class FieldSummaryRecord:
+    """One row per field: whole-field statistics that are not per-object.
+
+    The adhesion mixing index lives here -- it is a single number for a field
+    (how much the cell populations touch across groups vs within), not a
+    per-cell quantity, so it has nowhere sensible to go in ``objects.csv``.
+    """
+
+    dataset_id: str
+    field_id: str
+    values: Mapping[str, Scalar] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
 class MeasurementBundle:
     """Everything one field yields."""
 
@@ -426,6 +440,7 @@ class MeasurementBundle:
     contacts: tuple[ContactRecord, ...] = ()
     aggregates: tuple[AggregateRecord, ...] = ()
     localization_profiles: tuple[LocalizationProfileRecord, ...] = ()
+    field_summary: FieldSummaryRecord | None = None
     warnings: tuple[str, ...] = ()
 
 
