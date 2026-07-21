@@ -41,6 +41,7 @@ def render_field_review(
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from skimage.color import label2rgb
     from skimage.segmentation import find_boundaries
 
     image = read_image_volume(image_artifact_dir, verify_hashes=verify_hashes)
@@ -58,18 +59,28 @@ def render_field_review(
     green = channel_mips[0]
     red = channel_mips[1] if len(channel_mips) > 1 else np.zeros_like(green)
     merge = np.stack([red, green, np.zeros_like(green)], axis=-1)
-    overlay = merge.copy()
-    overlay[find_boundaries(cells.max(axis=0), mode="outer")] = [1, 1, 1]
 
-    n_panels = len(channel_mips) + 2  # channels + merge + overlay
+    # Max-label projection: at each pixel, the highest cell id in the column.
+    # Enough to show instance identity for a visual quality check.
+    label_mip = cells.max(axis=0)
+    overlay = merge.copy()
+    overlay[find_boundaries(label_mip, mode="outer")] = [1, 1, 1]
+    # Filled instances in distinct colours -- makes split/merge errors obvious in
+    # a way outlines alone do not.
+    filled = label2rgb(label_mip, bg_label=0, bg_color=(0, 0, 0))
+
+    # channels + merge + outlines + filled mask
+    n_panels = len(channel_mips) + 3
     fig, ax = plt.subplots(1, n_panels, figsize=(5.5 * n_panels, 5.5))
     for i, mip in enumerate(channel_mips):
         ax[i].imshow(mip, cmap="gray")
         ax[i].set_title(f"{names[i]} (MIP)")
-    ax[-2].imshow(merge)
-    ax[-2].set_title("merge")
-    ax[-1].imshow(overlay)
-    ax[-1].set_title(f"segmentation ({n_cells} cells)")
+    ax[-3].imshow(merge)
+    ax[-3].set_title("merge")
+    ax[-2].imshow(overlay)
+    ax[-2].set_title(f"outlines ({n_cells} cells)")
+    ax[-1].imshow(filled)
+    ax[-1].set_title("predicted mask (filled)")
     for a in ax:
         a.axis("off")
 
