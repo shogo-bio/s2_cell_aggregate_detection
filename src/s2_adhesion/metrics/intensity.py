@@ -222,6 +222,8 @@ def compute_intensity(
             f"labels shape {labels.shape} != image shape {image.shape_zyx}"
         )
 
+    from scipy import ndimage as ndi
+
     spacing = image.geometry.spacing_um_zyx
     voxel_volume = image.geometry.voxel_volume_um3
     mad_multiplier = background.mad_multiplier
@@ -231,20 +233,52 @@ def compute_intensity(
 
     out: dict[int, dict[str, Scalar]] = {int(cid): {} for cid in cell_ids}
 
+    # Per-channel arrays and field-level background, computed once.
+    active_channels: list[tuple[str, NDArray[np.float64], float | None, float | None, set[str]]] = []
     for binding in image.channels:
         if ChannelRole.IGNORE in binding.roles:
             continue
-        cid = binding.channel_id
-        chan = np.asarray(image.channel(cid), dtype=np.float64)
+        chan = np.asarray(image.channel(binding.channel_id), dtype=np.float64)
+        bg_value, bg_mad, bg_codes = _channel_background(
+            chan, labels, binding.channel_id, background
+        )
+        active_channels.append((binding.channel_id, chan, bg_value, bg_mad, set(bg_codes)))
 
-        bg_value, bg_mad, bg_codes = _channel_background(chan, labels, cid, background)
+    # Bounding box per label so the per-cell distance transforms and stats run on
+    # a small crop, not the whole 512x512 volume once per cell/channel. The pad
+    # covers the outer shell, which reaches outside the cell by up to
+    # outer_shell_width_um; without it the outer shell would be clipped.
+    slices = ndi.find_objects(labels)
+    outer_pad = int(np.ceil(outer_shell_width_um / min(spacing))) + 1
 
-        for cell_id in cell_ids:
-            row = out[int(cell_id)]
+    for label_index, sl in enumerate(slices):
+        if sl is None:
+            continue
+        cell_id = label_index + 1
+        row = out.get(int(cell_id))
+        if row is None:
+            continue
+
+        padded = tuple(
+            slice(max(0, s.start - outer_pad), min(dim, s.stop + outer_pad))
+            for s, dim in zip(sl, labels.shape)
+        )
+        sub_labels = labels[padded]
+        mask = sub_labels == cell_id
+        voxel_count = int(mask.sum())
+
+        # Shell masks depend only on geometry, so compute them once per cell and
+        # reuse across channels.
+        inner = core = outer = None
+        if voxel_count > 0:
+            inner, core, outer = _shell_masks(
+                mask, spacing, inner_shell_width_um, outer_shell_width_um
+            )
+
+        for cid, chan, bg_value, bg_mad, bg_codes in active_channels:
             codes = set(bg_codes)
-            mask = labels == cell_id
-            voxel_count = int(mask.sum())
-            values = chan[mask]
+            sub_chan = chan[padded]
+            values = sub_chan[mask]
 
             stats = _region_stats(values)
             if voxel_count == 0:
@@ -268,19 +302,16 @@ def compute_intensity(
             core_mean: float | None = None
             outer_mean: float | None = None
             if voxel_count > 0:
-                inner, core, outer = _shell_masks(
-                    mask, spacing, inner_shell_width_um, outer_shell_width_um
-                )
                 if np.any(inner):
-                    inner_mean = float(chan[inner].mean())
+                    inner_mean = float(sub_chan[inner].mean())
                 else:
                     codes.add("inner_shell_empty")
                 if np.any(core):
-                    core_mean = float(chan[core].mean())
+                    core_mean = float(sub_chan[core].mean())
                 else:
                     codes.add("core_empty")
                 if np.any(outer):
-                    outer_mean = float(chan[outer].mean())
+                    outer_mean = float(sub_chan[outer].mean())
                 else:
                     codes.add("outer_shell_empty")
 

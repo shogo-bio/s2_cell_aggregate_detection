@@ -183,11 +183,24 @@ def compute_surface_partition(
     fraction alongside any coverage figure so that confound stays visible.
     """
     out: dict[int, dict[str, Scalar]] = {}
-    cell_ids = np.unique(labels)
-    cell_ids = cell_ids[cell_ids > 0]
 
-    for cell_id in cell_ids:
-        row = classify_cell_surface(labels, int(cell_id), geometry, optics)
+    # Crop to each cell's bounding box (plus a margin covering the guard band,
+    # which reaches out to one PSF width toward neighbours) so marching cubes and
+    # the distance transform run on a small volume, not the whole field per cell.
+    # Only areas are computed, so working in crop-local coordinates is exact.
+    slices = ndi.find_objects(labels)
+    psf = max(optics.axial_fwhm_um, optics.lateral_fwhm_um)
+    pad = int(np.ceil(psf / min(geometry.spacing_um_zyx))) + 2
+
+    for label_index, sl in enumerate(slices):
+        if sl is None:
+            continue
+        cell_id = label_index + 1
+        padded = tuple(
+            slice(max(0, s.start - pad), min(dim, s.stop + pad))
+            for s, dim in zip(sl, labels.shape)
+        )
+        row = classify_cell_surface(labels[padded], cell_id, geometry, optics)
         observable = row.get("observable_surface_fraction")
         if observable is not None and observable < min_observable_fraction:
             row["surface_qc"] = "insufficient_free_surface"

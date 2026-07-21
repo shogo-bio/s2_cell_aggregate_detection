@@ -72,6 +72,53 @@ def _bin_index(values: NDArray[np.float64], edges: NDArray[np.float64]) -> NDArr
     return idx
 
 
+def _global_outside_distance_and_nearest(
+    cells: NDArray[np.uint32], spacing: tuple[float, float, float]
+) -> tuple[NDArray[np.float64], NDArray[np.uint32]]:
+    """Distance from every background voxel to the nearest cell, and which cell.
+
+    ONE anisotropy-aware distance transform with ``return_indices`` replaces the
+    per-cell outside transforms: the nearest foreground voxel's label is read
+    straight from the returned index field. On a real field this is the
+    difference between ~125 s and a second. Only the ``cells == 0`` entries of
+    the returned arrays are meaningful (interior voxels get their own per-cell
+    inside distance elsewhere).
+
+    Ties are resolved by the transform's own nearest-index rule rather than the
+    old lowest-id convention; both give each background voxel exactly one
+    nearest cell, which is all the no-double-counting guarantee requires.
+    """
+    from scipy.ndimage import distance_transform_edt as _edt
+
+    background = cells == 0
+    d_out, inds = _edt(
+        background, sampling=tuple(float(s) for s in spacing), return_indices=True
+    )
+    nearest = cells[tuple(inds)]
+    nearest = np.where(background, nearest, np.uint32(0)).astype(np.uint32)
+    return d_out.astype(np.float64), nearest
+
+
+def _bounding_boxes(cells: NDArray[np.uint32]) -> dict[int, tuple[slice, ...]]:
+    """Bounding box slice per label id (1-indexed), via one pass."""
+    from scipy import ndimage as ndi
+
+    boxes: dict[int, tuple[slice, ...]] = {}
+    for label_index, sl in enumerate(ndi.find_objects(cells)):
+        if sl is not None:
+            boxes[label_index + 1] = sl
+    return boxes
+
+
+def _padded_slice(
+    box: tuple[slice, ...], shape: tuple[int, ...], pad: int
+) -> tuple[slice, ...]:
+    return tuple(
+        slice(max(0, s.start - pad), min(dim, s.stop + pad))
+        for s, dim in zip(box, shape)
+    )
+
+
 def _per_cell_signed_distances(
     cells: NDArray[np.uint32], spacing: tuple[float, float, float]
 ) -> tuple[NDArray[np.uint32], dict[int, tuple[NDArray[np.float64], NDArray[np.float64]]]]:
@@ -149,27 +196,37 @@ def compute_signed_distance_profiles(
     voxel_volume = geometry.voxel_volume_um3
     corrected_channels = corrected_channels or {}
 
-    nearest_cell, per_cell = _per_cell_signed_distances(cells, spacing)
+    d_out_global, nearest_cell = _global_outside_distance_and_nearest(cells, spacing)
+    boxes = _bounding_boxes(cells)
+    exterior_pad = int(np.ceil(float(np.max(np.abs(edges))) / min(spacing))) + 1
 
     records: list[LocalizationProfileRecord] = []
     for cid in _cell_ids(cells):
-        d_in, d_out = per_cell[cid]
-        signed = d_in - d_out
-        valid_mask = (cells == cid) | ((cells == 0) & (nearest_cell == cid))
+        sl = _padded_slice(boxes[cid], cells.shape, exterior_pad)
+        cells_c = cells[sl]
+        # Interior depth is a per-cell distance to THIS cell's own boundary
+        # (neighbours treated as outside), so it must be computed per cell -- but
+        # only on the crop. Exterior distance/assignment come from the single
+        # global transform, sliced to the crop.
+        d_in = distance_transform_edt(cells_c == cid, sampling=spacing)
+        signed = d_in - d_out_global[sl]
+        valid_mask = (cells_c == cid) | ((cells_c == 0) & (nearest_cell[sl] == cid))
         bin_idx = _bin_index(signed, edges)
         bin_idx = np.where(valid_mask, bin_idx, -1)
 
         for channel_id, raw in channels.items():
+            raw_c = raw[sl]
             corrected = corrected_channels.get(channel_id)
+            corrected_c = corrected[sl] if corrected is not None else None
             for i in range(n_bins):
                 bin_mask = bin_idx == i
                 voxel_count = int(np.count_nonzero(bin_mask))
                 sampled_volume_um3 = voxel_count * voxel_volume
                 if voxel_count > 0:
-                    mean_intensity = float(raw[bin_mask].astype(np.float64).mean())
+                    mean_intensity = float(raw_c[bin_mask].astype(np.float64).mean())
                     integrated_corrected_intensity = (
-                        float(corrected[bin_mask].astype(np.float64).sum()) * voxel_volume
-                        if corrected is not None
+                        float(corrected_c[bin_mask].astype(np.float64).sum()) * voxel_volume
+                        if corrected_c is not None
                         else None
                     )
                 else:
@@ -230,23 +287,29 @@ def compute_shell_enrichment_scores(
     """
     background_noise_std = background_noise_std or {}
     spacing = geometry.spacing_um_zyx
-    nearest_cell, per_cell = _per_cell_signed_distances(cells, spacing)
+    # Global outside distance + nearest cell in one transform; per-cell inside
+    # distance on a crop. Same optimisation as compute_signed_distance_profiles.
+    d_out_global, nearest_cell = _global_outside_distance_and_nearest(cells, spacing)
+    boxes = _bounding_boxes(cells)
+    pad = int(np.ceil(config.outer_shell_width_um / min(spacing))) + 1
 
     out: dict[int, dict[str, Scalar]] = {cid: {} for cid in _cell_ids(cells)}
     for cid in _cell_ids(cells):
-        d_in, d_out = per_cell[cid]
-        cell_mask = cells == cid
+        sl = _padded_slice(boxes[cid], cells.shape, pad)
+        cells_c = cells[sl]
+        cell_mask = cells_c == cid
+        d_in = distance_transform_edt(cell_mask, sampling=spacing)
         outer_mask = (
-            (cells == 0)
-            & (nearest_cell == cid)
-            & (d_out <= config.outer_shell_width_um)
+            (cells_c == 0)
+            & (nearest_cell[sl] == cid)
+            & (d_out_global[sl] <= config.outer_shell_width_um)
         )
         inner_mask = cell_mask & (d_in <= config.inner_shell_width_um)
         core_mask = cell_mask & (d_in > config.inner_shell_width_um)
 
         for channel_id, raw in channels.items():
             eps = float(background_noise_std.get(channel_id, 0.0))
-            raw64 = raw.astype(np.float64)
+            raw64 = raw[sl].astype(np.float64)
 
             outer_mean = float(raw64[outer_mask].mean()) if np.any(outer_mask) else None
             inner_mean = float(raw64[inner_mask].mean()) if np.any(inner_mask) else None

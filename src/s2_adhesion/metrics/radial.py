@@ -193,16 +193,23 @@ def compute_radial_metrics(
     eps_by_channel = eps_by_channel or {}
 
     out: dict[int, dict[str, Scalar]] = {}
-    cell_ids = np.unique(labels)
-    cell_ids = cell_ids[cell_ids > 0]
 
-    for cell_id in cell_ids:
-        mask = labels == cell_id
+    # Crop to each cell's bounding box. The normalised-radius transform is an
+    # INTERIOR distance transform (depth within the cell), so the tight box is
+    # exact -- no padding needed -- and avoids running a full-field transform
+    # once per cell per channel.
+    slices = ndi.find_objects(labels)
+
+    for label_index, sl in enumerate(slices):
+        if sl is None:
+            continue
+        cell_id = label_index + 1
+        mask = labels[sl] == cell_id
         values: dict[str, Scalar] = {}
         for channel_id, raw in channel_intensities.items():
             background = float(background_by_channel.get(channel_id, 0.0))
             corrected = np.clip(
-                np.asarray(raw, dtype=np.float64) - background, 0.0, None
+                np.asarray(raw[sl], dtype=np.float64) - background, 0.0, None
             )
             profile = radial_profile(corrected, mask, geometry, n_bins=n_bins)
             eps = float(eps_by_channel.get(channel_id, DEFAULT_EPS))
