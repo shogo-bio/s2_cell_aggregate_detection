@@ -14,6 +14,8 @@ import pytest
 from s2_adhesion.config import CellposeModelConfig, DirectInstanceConfig, NormalizationConfig
 from s2_adhesion.contracts import ChannelRole, ContractViolation
 from s2_adhesion.segmentation.preprocess import (
+    combine_channels,
+    combined_channel_id,
     map_labels_to_original_grid,
     prepare_cellpose_input,
 )
@@ -143,6 +145,143 @@ class TestPrepareCellposeInput:
 
         assert not np.isnan(prepared.data).any()
         assert np.all(prepared.data == 0.0)
+
+
+def _two_population_image(rng):
+    """green-only blob at Y 1..3, red-only blob at Y 6..8, on a Z=3, 10x10 grid.
+
+    Red is ten times dimmer in raw counts than green, so a merge that did not
+    normalise each channel first would nearly erase the red cell.
+    """
+    green = rng.uniform(0, 20, size=(3, 10, 10)).astype(np.float32)
+    red = rng.uniform(0, 2, size=(3, 10, 10)).astype(np.float32)
+    green[:, 1:4, 1:4] = 1000.0
+    red[:, 6:9, 6:9] = 100.0
+    data = np.stack([green, red], axis=0)
+    return make_image_volume(
+        data, spacing=ANISOTROPIC, channel_ids=("green", "red"),
+        roles=(ChannelRole.SIGNAL, ChannelRole.SIGNAL),
+    )
+
+
+class TestChannelCombination:
+    def test_default_is_stack_and_keeps_two_channels(self):
+        image = _two_population_image(np.random.default_rng(10))
+        config = DirectInstanceConfig(
+            strategy="direct_cellpose", input_channel_ids=("green", "red")
+        )
+        assert config.channel_combination == "stack"
+
+        prepared = prepare_cellpose_input(image, config)
+
+        assert prepared.data.shape == (2, 3, 10, 10)
+        assert prepared.channel_ids == ("green", "red")
+
+    def test_max_yields_single_channel_with_synthetic_id(self):
+        image = _two_population_image(np.random.default_rng(11))
+        config = DirectInstanceConfig(
+            strategy="direct_cellpose",
+            input_channel_ids=("green", "red"),
+            channel_combination="max",
+        )
+
+        prepared = prepare_cellpose_input(image, config)
+
+        assert prepared.data.shape == (1, 3, 10, 10)
+        assert prepared.data.dtype == np.float32
+        assert prepared.channel_ids == ("max(green,red)",)
+
+    def test_max_keeps_inplane_resampling(self):
+        rng = np.random.default_rng(12)
+        data = rng.random((2, 4, 5, 10)).astype(np.float32)
+        image = make_image_volume(
+            data, spacing=NONSQUARE_INPLANE, channel_ids=("green", "red"),
+            roles=(ChannelRole.SIGNAL, ChannelRole.SIGNAL),
+        )
+        config = DirectInstanceConfig(
+            strategy="direct_cellpose",
+            input_channel_ids=("green", "red"),
+            channel_combination="max",
+        )
+
+        prepared = prepare_cellpose_input(image, config)
+
+        # Y 5 -> 10 (scale 2), X stays 10, one merged channel.
+        assert prepared.data.shape == (1, 4, 10, 10)
+
+    def test_red_only_cell_appears_in_max_image_at_full_intensity(self):
+        """The bug this exists for: a cell bright only in the dim channel
+        must reach cellpose as bright as a cell in the bright channel."""
+        image = _two_population_image(np.random.default_rng(13))
+        config = DirectInstanceConfig(
+            strategy="direct_cellpose",
+            input_channel_ids=("green", "red"),
+            channel_combination="max",
+            model=CellposeModelConfig(normalization=NormalizationConfig(clip=True)),
+        )
+
+        merged = prepare_cellpose_input(image, config).data[0]
+
+        green_blob = merged[:, 1:4, 1:4]
+        red_blob = merged[:, 6:9, 6:9]
+        background = merged[:, 4:6, :]
+        assert green_blob.min() == pytest.approx(1.0)
+        assert red_blob.min() == pytest.approx(1.0)
+        assert background.max() < 0.2
+
+    def test_max_normalises_each_channel_independently(self):
+        """With a shared (not per-channel) normalisation the dim red channel
+        would top out near 0.1; independently normalised it reaches 1."""
+        image = _two_population_image(np.random.default_rng(14))
+        config = DirectInstanceConfig(
+            strategy="direct_cellpose",
+            input_channel_ids=("green", "red"),
+            channel_combination="max",
+        )
+        merged = prepare_cellpose_input(image, config).data[0]
+        # red raw max is 100, green raw max is 1000; only per-channel
+        # normalisation makes the red blob as bright as the green one.
+        assert merged[:, 6:9, 6:9].min() == pytest.approx(merged[:, 1:4, 1:4].min())
+
+    def test_sum_is_renormalised_to_unit_range(self):
+        image = _two_population_image(np.random.default_rng(15))
+        config = DirectInstanceConfig(
+            strategy="direct_cellpose",
+            input_channel_ids=("green", "red"),
+            channel_combination="sum",
+        )
+
+        prepared = prepare_cellpose_input(image, config)
+
+        assert prepared.data.shape == (1, 3, 10, 10)
+        assert prepared.channel_ids == ("sum(green,red)",)
+        assert prepared.data.min() >= 0.0
+        assert prepared.data.max() <= 1.0 + 1e-6
+        # both blobs survive the merge
+        merged = prepared.data[0]
+        assert merged[:, 1:4, 1:4].min() > 0.5
+        assert merged[:, 6:9, 6:9].min() > 0.5
+
+    def test_combine_channels_max_is_voxelwise_maximum(self):
+        a = np.zeros((2, 3, 4), dtype=np.float32)
+        b = np.zeros((2, 3, 4), dtype=np.float32)
+        a[0] = 0.7
+        b[1] = 0.4
+        merged = combine_channels(np.stack([a, b]), "max", NormalizationConfig())
+        assert merged.shape == (1, 2, 3, 4)
+        np.testing.assert_allclose(merged[0, 0], 0.7)
+        np.testing.assert_allclose(merged[0, 1], 0.4)
+
+    def test_combine_channels_rejects_stack_and_bad_shape(self):
+        stacked = np.zeros((2, 2, 3, 4), dtype=np.float32)
+        with pytest.raises(ContractViolation):
+            combine_channels(stacked, "stack", NormalizationConfig())
+        with pytest.raises(ContractViolation):
+            combine_channels(stacked[0], "max", NormalizationConfig())
+
+    def test_combined_channel_id_names_mode_and_inputs(self):
+        assert combined_channel_id("max", ("green", "red")) == "max(green,red)"
+        assert combined_channel_id("sum", ("a", "b", "c")) == "sum(a,b,c)"
 
 
 class TestMapLabelsToOriginalGrid:

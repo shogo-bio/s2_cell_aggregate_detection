@@ -137,6 +137,60 @@ class TestBackendConsistency:
             load_config(write(tmp_path, cfg))
 
 
+class TestChannelCombination:
+    TWO_SIGNALS = """
+    schema_version: s2-pipeline-config/v1
+    channels:
+      - {channel_id: green, source_index: 0, roles: [signal]}
+      - {channel_id: red, source_index: 1, roles: [signal]}
+    segmentation:
+      strategy: direct_cellpose
+      input_channel_ids: [green, red]
+      model: {package_major: 3, model_name: cyto3}
+    """
+
+    def test_default_is_stack(self, tmp_path):
+        cfg = load_config(write(tmp_path, self.TWO_SIGNALS))
+        assert cfg.segmentation.channel_combination == "stack"
+
+    def test_max_and_sum_load(self, tmp_path):
+        for mode in ("max", "sum"):
+            cfg = load_config(
+                write(tmp_path, self.TWO_SIGNALS + f"  channel_combination: {mode}\n")
+            )
+            assert cfg.segmentation.channel_combination == mode
+
+    def test_unknown_combination_is_rejected_with_the_options(self, tmp_path):
+        bad = self.TWO_SIGNALS + "  channel_combination: average\n"
+        with pytest.raises(ConfigError, match=r"channel_combination.*'max'"):
+            load_config(write(tmp_path, bad))
+
+    def test_merge_needs_at_least_two_channels(self, tmp_path):
+        bad = self.TWO_SIGNALS.replace(
+            "input_channel_ids: [green, red]", "input_channel_ids: [green]"
+        ) + "  channel_combination: max\n"
+        with pytest.raises(ConfigError, match="at least two"):
+            load_config(write(tmp_path, bad))
+
+    def test_merge_lifts_the_cellpose3_two_channel_limit(self, tmp_path):
+        """Merging produces one image, so the stacked-channel limit no longer
+        applies -- but it still does with the default 'stack'."""
+        three = self.TWO_SIGNALS.replace(
+            "      - {channel_id: red, source_index: 1, roles: [signal]}",
+            "      - {channel_id: red, source_index: 1, roles: [signal]}\n"
+            "      - {channel_id: blue, source_index: 2, roles: [signal]}",
+        ).replace("input_channel_ids: [green, red]", "input_channel_ids: [green, red, blue]")
+        cfg = load_config(write(tmp_path, three + "  channel_combination: max\n"))
+        assert cfg.segmentation.input_channel_ids == ("green", "red", "blue")
+        with pytest.raises(ConfigError, match="at most two input channels"):
+            load_config(write(tmp_path, three))
+
+    def test_shipped_both_populations_config_loads(self):
+        cfg = load_config(Path("configs/cirl_gfp_vs_cirl_m_both.yaml"))
+        assert cfg.segmentation.input_channel_ids == ("green", "red")
+        assert cfg.segmentation.channel_combination == "max"
+
+
 class TestContactEstimatorGuard:
     def test_default_is_marching_cubes_with_isotropic_resampling(self, tmp_path):
         c = load_config(write(tmp_path, MINIMAL)).measurement.contact
