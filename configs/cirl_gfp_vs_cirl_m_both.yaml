@@ -1,0 +1,67 @@
+# Real-data config: Cirl(V5)_GFP_vs_Cirl_m.nd2 -- segment both populations.
+# Same as cirl_gfp_vs_cirl_m.yaml except the segmentation input (see below).
+# Two separate cell populations, homophilic adhesion assay (both express Cirl):
+#   green (FITC)    = Cirl-GFP cells
+#   red   (mCherry) = Cirl-mCherry cells
+# Acquisition: 40x/1.3, XY 0.632 um, Z 2.0 um x 11, 2 channels.
+
+schema_version: s2-pipeline-config/v1
+analysis_backend: ml_instance_3d
+
+channels:
+  - channel_id: green
+    source_index: 0
+    roles: [signal]
+    color: green
+    population: Cirl-GFP
+    protein: Cirl-GFP
+  - channel_id: red
+    source_index: 1
+    roles: [signal]
+    color: red
+    population: Cirl-mCherry
+    protein: Cirl-mCherry
+
+segmentation:
+  strategy: direct_cellpose
+  # Segment on BOTH population markers, merged into one image.
+  # The green-only config (cirl_gfp_vs_cirl_m.yaml) feeds cellpose the Cirl-GFP
+  # channel alone, so a cell that expresses only Cirl-mCherry has no outline in
+  # what cellpose sees and is never segmented -- checked by eye on
+  # output/twofield_run/review/field001_compare.png (2026-09-13). Without those
+  # cells the heterotypic contact counts and the mixing index cannot be right.
+  # Fix decided 2026-08-23 (option A): normalise each channel on its own, take
+  # the voxel-wise maximum, and give cellpose that single grayscale image.
+  # (Stacking green+red instead would tell cellpose-3 that red is a nucleus.)
+  input_channel_ids: [green, red]
+  channel_combination: max
+  model:
+    package_major: 3
+    model_name: cyto3
+    device: cpu
+    diameter_um: 10.0
+    eval:
+      # 2.5D stitching: segment each Z plane in 2D, join by IoU. The right choice
+      # for this 2 um / 0.63 um anisotropy -- a native 3D flow would have to
+      # resolve shape along the coarse Z axis. Validated on this data: 132 cells,
+      # clean outlines, ~50 s/field.
+      stitch_threshold: 0.3
+  min_cell_volume_um3: 50.0
+
+measurement:
+  optics:
+    axial_fwhm_um: 0.7
+    lateral_fwhm_um: 0.25
+  saturation:
+    detector_max: 4095      # 12-bit detector
+  contact:
+    estimator: marching_cubes
+    resample_isotropic_before_contact: true
+    minimum_contact_area_um2: 1.0
+  localization:
+    decision:
+      enabled: false        # keep categorical calls off until calibrated
+
+artifacts:
+  format: zarr
+  verify_content_hashes: true
