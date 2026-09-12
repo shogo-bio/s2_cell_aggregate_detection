@@ -12,6 +12,10 @@ Pipeline, per TASK 3:
 3. Resample X and Y to ``min(dy, dx)`` so the in-plane grid is square; leave Z
    at its acquired spacing. The resulting anisotropy (``dz / min(dy, dx)``,
    unchanged by step 3) is what gets passed to cellpose's ``anisotropy=``.
+3b. If ``channel_combination`` is ``"max"`` or ``"sum"``, merge the normalised,
+   resampled channels into ONE grayscale channel (see :func:`combine_channels`).
+   Two cell populations marked by different channels then both have outlines
+   in the single image cellpose is given.
 4. (elsewhere: engine.evaluate on the resampled grid)
 5. Map labels back to the EXACT original ZYX grid by nearest-neighbour --
    never interpolated, so label ids survive exactly.
@@ -26,7 +30,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy import ndimage
 
-from ..config import DirectInstanceConfig, NormalizationConfig
+from ..config import ChannelCombination, DirectInstanceConfig, NormalizationConfig
 from ..contracts import ImageVolume
 from ..errors import ContractViolation
 from .protocol import PreparedCellposeInput
@@ -78,12 +82,58 @@ def _resample_inplane(
     return resampled.astype(np.float32)
 
 
+def combined_channel_id(
+    combination: ChannelCombination, channel_ids: tuple[str, ...]
+) -> str:
+    """Synthetic channel id for a merged image, e.g. ``"max(green,red)"``.
+
+    It records *which* channels went in and *how*, so provenance and
+    diagnostics that only see ``PreparedCellposeInput.channel_ids`` still say
+    what cellpose was fed. It is never looked up as a real channel.
+    """
+    return f"{combination}({','.join(channel_ids)})"
+
+
+def combine_channels(
+    channels: NDArray[np.floating],
+    combination: ChannelCombination,
+    norm_config: NormalizationConfig,
+) -> NDArray[np.float32]:
+    """Merge already-normalised ``(C, Z, Y, X)`` channels into ``(1, Z, Y, X)``.
+
+    ``"max"`` takes the voxel-wise maximum: a cell bright in any one channel
+    keeps its full normalised intensity, and nothing is added where a channel
+    is dark. ``"sum"`` adds the channels and percentile-normalises the result
+    again with the same settings, so its range is comparable to a single
+    normalised channel. ``"stack"`` is not a merge and is rejected here.
+
+    Every input channel must already be normalised on its own (that is what
+    makes a dim channel count as much as a bright one) -- this function does
+    not normalise its inputs.
+    """
+    if channels.ndim != 4:
+        raise ContractViolation(
+            f"combine_channels expects (C, Z, Y, X), got shape {channels.shape}"
+        )
+    if combination == "max":
+        merged = np.max(channels, axis=0)
+    elif combination == "sum":
+        merged = _normalize_percentile(np.sum(channels, axis=0), norm_config)
+    else:
+        raise ContractViolation(
+            f"channel_combination {combination!r} is not a merge; "
+            "expected 'max' or 'sum'"
+        )
+    return merged.astype(np.float32, copy=False)[np.newaxis, ...]
+
+
 def prepare_cellpose_input(
     image: ImageVolume, direct_config: DirectInstanceConfig
 ) -> PreparedCellposeInput:
-    """Select, normalise and resample ``image`` per ``direct_config`` for cellpose."""
+    """Select, normalise, resample and (optionally) merge ``image`` for cellpose."""
     channel_ids = direct_config.input_channel_ids
     norm_config = direct_config.model.normalization
+    combination = direct_config.channel_combination
 
     resampled_channels = [
         _resample_inplane(
@@ -93,6 +143,9 @@ def prepare_cellpose_input(
         for cid in channel_ids
     ]
     stacked = np.stack(resampled_channels, axis=0)
+    if combination != "stack":
+        stacked = combine_channels(stacked, combination, norm_config)
+        channel_ids = (combined_channel_id(combination, channel_ids),)
 
     resampled_spacing = _target_inplane_spacing_um(image.geometry.spacing_um_zyx)
     anisotropy = image.geometry.anisotropy_z_to_xy

@@ -102,6 +102,8 @@ class DirectCellposeBackend:
             timing_seconds={"preprocess": prep_seconds, "evaluate": eval_seconds},
             extra={
                 "n_input_channels": len(prepared.channel_ids),
+                "input_channel_ids": ",".join(prepared.channel_ids),
+                "channel_combination": self.config.channel_combination,
                 "anisotropy": prepared.anisotropy,
             },
         )

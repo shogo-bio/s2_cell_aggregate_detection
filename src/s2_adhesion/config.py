@@ -94,11 +94,33 @@ class CellposeModelConfig:
     eval: CellposeEvalConfig = field(default_factory=CellposeEvalConfig)
 
 
+ChannelCombination: TypeAlias = Literal["stack", "max", "sum"]
+CHANNEL_COMBINATIONS: tuple[str, ...] = get_args(ChannelCombination)
+
+
 @dataclass(frozen=True, slots=True)
 class DirectInstanceConfig:
+    """Cellpose on the configured channels, no nuclear seeding.
+
+    ``channel_combination`` decides what cellpose actually sees:
+
+    * ``"stack"`` (default, historical behaviour): the selected channels are
+      handed over as separate channels (cellpose-3: first = cytoplasm,
+      second = nucleus, at most two).
+    * ``"max"`` / ``"sum"``: each channel is percentile-normalised on its own
+      and the normalised channels are then merged into ONE grayscale image
+      (voxel-wise maximum, or sum re-normalised to the same range). Use this
+      when the populations to segment are marked by *different* channels --
+      e.g. Cirl-GFP cells vs Cirl-mCherry cells -- so that a cell bright in
+      only one of them still has an outline for cellpose to find. Feeding the
+      channels stacked would instead tell cellpose-3 the second channel is a
+      nucleus, which it is not.
+    """
+
     strategy: Literal["direct_cellpose"]
     input_channel_ids: tuple[str, ...]
     model: CellposeModelConfig = field(default_factory=CellposeModelConfig)
+    channel_combination: ChannelCombination = "stack"
     min_cell_volume_um3: float = 50.0
     fill_internal_holes: bool = True
     split_disconnected_labels: bool = True
@@ -559,10 +581,22 @@ def validate_config(config: PipelineConfig) -> None:
             raise ConfigError("direct_cellpose: input_channel_ids must be non-empty")
         for cid in seg.input_channel_ids:
             require(cid, "segmentation.input_channel_ids")
-        if seg.model.package_major == 3 and len(seg.input_channel_ids) > 2:
+        if seg.channel_combination not in CHANNEL_COMBINATIONS:
             raise ConfigError(
-                "cellpose 3 accepts at most two input channels, got "
-                f"{len(seg.input_channel_ids)}"
+                f"segmentation.channel_combination: {seg.channel_combination!r} "
+                f"is not one of {list(CHANNEL_COMBINATIONS)}"
+            )
+        if seg.channel_combination == "stack":
+            if seg.model.package_major == 3 and len(seg.input_channel_ids) > 2:
+                raise ConfigError(
+                    "cellpose 3 accepts at most two input channels, got "
+                    f"{len(seg.input_channel_ids)}"
+                )
+        elif len(seg.input_channel_ids) < 2:
+            raise ConfigError(
+                f"segmentation.channel_combination {seg.channel_combination!r} "
+                "merges several channels into one image, so input_channel_ids "
+                f"needs at least two entries, got {list(seg.input_channel_ids)}"
             )
     elif isinstance(seg, DirectStarDistConfig):
         if not seg.input_channel_ids:
