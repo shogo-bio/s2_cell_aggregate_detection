@@ -197,6 +197,12 @@ class DirectInstanceConfig:
     min_cell_volume_um3: float = 50.0
     fill_internal_holes: bool = True
     split_disconnected_labels: bool = True
+    # Drop instances thinner than this many Z planes unless they touch the Z
+    # border (see ``postprocess.filter_by_z_extent``). ``None`` keeps
+    # everything. Real-data motivation (2026-09-13): a clump of sub-cellular
+    # particles was chopped into 1-2 plane "cells" of 30-200 um^3 and became
+    # the largest "aggregate" of its field.
+    min_z_extent_planes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -675,6 +681,10 @@ def validate_config(config: PipelineConfig) -> None:
             raise ConfigError(
                 f"segmentation.channel_combination: {seg.channel_combination!r} "
                 f"is not one of {list(CHANNEL_COMBINATIONS)}"
+            )
+        if seg.min_z_extent_planes is not None and seg.min_z_extent_planes < 1:
+            raise ConfigError(
+                f"segmentation.min_z_extent_planes must be >= 1, got {seg.min_z_extent_planes}"
             )
         _validate_normalization(seg.model.normalization, "segmentation.model.normalization")
         seen: set[str] = set()

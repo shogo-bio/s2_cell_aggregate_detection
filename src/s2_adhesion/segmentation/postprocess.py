@@ -113,6 +113,41 @@ def filter_by_physical_volume(
     return out
 
 
+def filter_by_z_extent(
+    labels: NDArray[np.integer],
+    min_planes: int,
+    *,
+    keep_touching_z_border: bool = True,
+) -> LabelArray:
+    """Drop instances that span fewer than ``min_planes`` Z planes.
+
+    A cell of the expected size cannot be one or two planes thick unless the
+    stack cuts it: with 2 um planes a 10 um S2 cell spans about five. Objects
+    that thin, away from the Z border, are debris (dead-cell fragments, small
+    particles, a clump chopped plane-by-plane by 2.5D stitching), not cells.
+    Instances touching the first or last plane are kept by default -- they may
+    be real cells truncated by the stack, and the metrics already flag those
+    as ``touches_z_border``.
+
+    ``min_planes`` is in planes, not micrometres, on purpose: the reasoning
+    is about the sampling ("one plane cannot hold a cell"), so a config value
+    of 3 means the same thing at any Z step.
+    """
+    if min_planes < 1:
+        raise ValueError(f"min_planes must be >= 1, got {min_planes}")
+    labels = np.asarray(labels)
+    out: LabelArray = labels.astype(np.uint32, copy=True)
+    nz = labels.shape[0]
+    for label_id in _nonzero_ids(labels):
+        planes = np.flatnonzero((labels == label_id).any(axis=(1, 2)))
+        if planes.size >= min_planes:
+            continue
+        if keep_touching_z_border and (planes.min() == 0 or planes.max() == nz - 1):
+            continue
+        out[out == label_id] = 0
+    return out
+
+
 def relabel_sequential(labels: NDArray[np.integer]) -> LabelArray:
     """Renumber surviving positive ids to a dense ``1..N`` range.
 

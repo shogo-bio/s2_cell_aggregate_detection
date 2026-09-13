@@ -29,14 +29,54 @@ def _mip(channel_zyx: np.ndarray) -> np.ndarray:
     return _norm(channel_zyx.max(axis=0).astype(np.float64))
 
 
+# Outline colours for the population panel. Anything not listed is drawn grey.
+POPULATION_COLOURS: dict[str, tuple[float, float, float]] = {
+    "Cirl-GFP": (0.2, 1.0, 0.2),
+    "Cirl-mCherry": (1.0, 0.25, 0.25),
+    "ambiguous": (1.0, 0.75, 0.1),
+    "unassigned": (0.6, 0.6, 0.6),
+}
+
+
+def _population_by_cell(objects_csv: Path, field_id: str) -> dict[int, str]:
+    """``object_id -> population`` for one field, from a run's objects.csv.
+
+    Only ``cell_3d`` rows are used. Returns an empty mapping when the file
+    lacks a population column (no population configured for the run).
+    """
+    import csv
+
+    out: dict[int, str] = {}
+    with objects_csv.open(encoding="utf-8", newline="") as fh:
+        reader = csv.DictReader(fh)
+        if reader.fieldnames is None or "population" not in reader.fieldnames:
+            return out
+        for row in reader:
+            if row.get("field_id") != field_id:
+                continue
+            if row.get("object_kind", "cell_3d") != "cell_3d":
+                continue
+            try:
+                out[int(row["object_id"])] = row["population"] or "unassigned"
+            except (KeyError, ValueError):
+                continue
+    return out
+
+
 def render_field_review(
     image_artifact_dir: Path,
     label_artifact_dir: Path,
     out_png: Path,
     *,
     verify_hashes: bool = True,
+    objects_csv: Path | None = None,
 ) -> Path:
-    """Write one comparison PNG for a single field. Returns the path written."""
+    """Write one comparison PNG for a single field. Returns the path written.
+
+    When ``objects_csv`` (a run's ``measurements/objects.csv``) is given and
+    carries a ``population`` column, a sixth panel draws each outline in its
+    population's colour so the assignment can be judged against the merge.
+    """
     import matplotlib
 
     matplotlib.use("Agg")
@@ -69,18 +109,33 @@ def render_field_review(
     # a way outlines alone do not.
     filled = label2rgb(label_mip, bg_label=0, bg_color=(0, 0, 0))
 
-    # channels + merge + outlines + filled mask
-    n_panels = len(channel_mips) + 3
+    population_of: dict[int, str] = {}
+    if objects_csv is not None and objects_csv.exists():
+        population_of = _population_by_cell(objects_csv, image.identity.field_id)
+
+    # channels + merge + outlines + filled mask (+ population outlines)
+    n_panels = len(channel_mips) + 3 + (1 if population_of else 0)
     fig, ax = plt.subplots(1, n_panels, figsize=(5.5 * n_panels, 5.5))
     for i, mip in enumerate(channel_mips):
         ax[i].imshow(mip, cmap="gray")
         ax[i].set_title(f"{names[i]} (MIP)")
-    ax[-3].imshow(merge)
-    ax[-3].set_title("merge")
-    ax[-2].imshow(overlay)
-    ax[-2].set_title(f"outlines ({n_cells} cells)")
-    ax[-1].imshow(filled)
-    ax[-1].set_title("predicted mask (filled)")
+    k = len(channel_mips)
+    ax[k].imshow(merge)
+    ax[k].set_title("merge")
+    ax[k + 1].imshow(overlay)
+    ax[k + 1].set_title(f"outlines ({n_cells} cells)")
+    ax[k + 2].imshow(filled)
+    ax[k + 2].set_title("predicted mask (filled)")
+    if population_of:
+        pop_overlay = merge * 0.6
+        counts: dict[str, int] = {}
+        for cell_id, pop in population_of.items():
+            colour = POPULATION_COLOURS.get(pop, (0.6, 0.6, 0.6))
+            pop_overlay[find_boundaries(label_mip == cell_id, mode="outer")] = colour
+            counts[pop] = counts.get(pop, 0) + 1
+        ax[k + 3].imshow(np.clip(pop_overlay, 0, 1))
+        legend = ", ".join(f"{p} {n}" for p, n in sorted(counts.items()))
+        ax[k + 3].set_title(f"population: {legend}", fontsize=9)
     for a in ax:
         a.axis("off")
 
@@ -109,6 +164,7 @@ def review_run(run_dir: Path | str, *, verify_hashes: bool = True) -> list[Path]
             "(expected images/ and labels/ subdirectories)."
         )
 
+    objects_csv = run_dir / "measurements" / "objects.csv"
     written: list[Path] = []
     for image_artifact in sorted(images_dir.glob("*.image.ome.zarr")):
         field_id = image_artifact.name.removesuffix(".image.ome.zarr")
@@ -118,7 +174,8 @@ def review_run(run_dir: Path | str, *, verify_hashes: bool = True) -> list[Path]
         out_png = review_dir / f"{field_id}_compare.png"
         written.append(
             render_field_review(
-                image_artifact, label_artifact, out_png, verify_hashes=verify_hashes
+                image_artifact, label_artifact, out_png, verify_hashes=verify_hashes,
+                objects_csv=objects_csv if objects_csv.exists() else None,
             )
         )
     return written
