@@ -90,7 +90,7 @@ def render_field_review(
         label_artifact_dir, verify_hashes=verify_hashes, image=image
     )
     cells = labels.cells
-    n_cells = int(cells.max())
+    n_cells = int(len(np.unique(cells)) - (1 if (cells == 0).any() else 0))
 
     # Per-channel MIPs, in channel order. Colour the first two green/red for the
     # merge (the common two-population layout); extra channels are shown mono.
