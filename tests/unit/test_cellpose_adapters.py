@@ -230,7 +230,12 @@ class TestDirectCellposeBackend:
             return out
 
         engine = FakeCellposeEngine(labels_factory=labels_factory)
-        backend = DirectCellposeBackend(config=_direct_config(), engine=engine)
+        # The synthetic labels are far below the default 50 um^3 floor
+        # (0.16 um^3 each); this test is about id survival, not size, so the
+        # volume filter (applied since 2026-09-13) is switched off here.
+        backend = DirectCellposeBackend(
+            config=_direct_config(min_cell_volume_um3=0.0), engine=engine
+        )
 
         result = backend.segment(SegmentationRequest(image=image, run_id="run0"))
 
