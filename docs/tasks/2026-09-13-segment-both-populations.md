@@ -27,6 +27,19 @@
 - **予算の目安**: 一晩（3 時間を超えたら止めて状態を書く）。相見積もりは不要（設計は 2026-08-23 に決定済み）
 - **状態**: ACTIVE（実装は済み。全視野は回していない。次は Shogo の判断待ち）
 
+## 下流が待っている（2026-09-13 追記）
+
+この定量の結果は、図を作る道具 **nd2fig**（`C:\Users\ryuga\dev\nd2fig`）が読む。流れは「① 定量（このリポジトリ）→ ② 定量結果から
+切り抜く場所の候補を出す（nd2fig の Phase 7、契約 `docs/tasks/quant-to-figure-bridge.md`）→ ③ 図にする（nd2fig、完成済み）」。
+nd2fig 側は①が固まるまで**待機中**。①に頼むことは 2 つ:
+
+1. 分割が合格したら、**全 25 視野**の `objects.csv`・`aggregates.csv`・`field_summary.csv`・`run_manifest.json` を 1 か所に出す
+   （出力先の名前を CHECKPOINT に書く。1 視野 9 分なので約 4 時間。電源をつないで回す）
+2. nd2fig が当てにしている列を**変えない**（変えるなら CHECKPOINT に書く）: `objects.csv` の `field_id`・`centroid_x_um / centroid_y_um /
+   centroid_z_um`・`bbox_extent_{x,y,z}_um`・`aggregate_id`・`touches_z_border`・`population`・`ch.*.saturation_status`、
+   `aggregates.csv` の `member_cell_ids`・`aggregate_extent_{x,y,z}_um`・`aggregate_cell_count`、`field_summary.csv` の `mixing_index`・`mixing_qc`。
+   座標はいまの決まり（ボクセル中心、配列の原点 = 視野の左上、µm）のまま
+
 守ること:
 - ブランチ `feature/segment-both-populations` を `main` から切って作業する。**`main` には触らない**（origin より 19 commit 先行して未 push のまま。push するかは Shogo の判断）。
   feature branch の push は可。PR は作らない。コミットは日本語の conventional commit（`feat:` / `fix:` / `test:` / `docs:`）
