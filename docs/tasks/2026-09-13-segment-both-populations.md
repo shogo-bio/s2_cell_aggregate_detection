@@ -25,7 +25,7 @@
   - 実行: `C:/Users/ryuga/dev/envs/cellpose-x64/.venv/Scripts/python.exe -m s2_adhesion.cli run --config configs/cirl_gfp_vs_cirl_m_both.yaml --max-fields 2 "data/Cirl(V5)_GFP_vs_Cirl_m.nd2" output/twofield_both/`
     （cellpose 3 の venv でないと `package_major=3` の設定で落ちる）→ `... review output/twofield_both/`
 - **予算の目安**: 一晩（3 時間を超えたら止めて状態を書く）。相見積もりは不要（設計は 2026-08-23 に決定済み）
-- **状態**: ACTIVE（赤の正規化は決定・実装済み。2 視野合格。全 25 視野を実行中 — 2026-09-13 13:47 JST 開始）
+- **状態**: ACTIVE → **Shogo の確認待ち**（全 25 視野の出力済み `output/allfields_both/`。納得すれば DONE）
 
 ## 下流が待っている（2026-09-13 追記）
 
@@ -49,10 +49,11 @@ nd2fig 側は①が固まるまで**待機中**。①に頼むことは 2 つ:
 
 ## CHECKPOINT(最新のみ・≤10行 — 書式: 済／次の一手／未解決・注意／検証)
 
-- **済**: 赤の正規化を Codex（GPT-6）と Fable に相見積もり → 両者一致で「赤の上側を絶対値 1000 カウントで固定」（下の「結果 2」）。`normalization_by_channel` と `upper_value` を実装（commit `8eed11d`、pytest 522 passed / 3 skipped）。`configs/cirl_gfp_vs_cirl_m_both.yaml` を赤 `upper_value: 1000` に更新し、2 視野（`output/twofield_both_abs1000/`）と field020（`output/onefield020_abs1000/`）で合格を確認
-- **次の一手**: **全 25 視野を `output/allfields_both/` に向けて実行中**（13:47 JST 開始、1 視野 約 6〜9 分）。終わったら review 画像を数視野見て、視野ごとの表をこの文書に書き、commit する。nd2fig は `output/allfields_both/measurements/`（`objects.csv`・`aggregates.csv`・`contacts.csv`・`field_summary.csv`）と `output/allfields_both/run_manifest.json` を読む
-- **未解決/注意**: (1) 暗い赤だけの細胞（赤の中央値 50〜60 カウント）は拾わない（設計上の優先順位: Z 伸びの回避 > 暗い赤の検出。1–99 の設定では拾えたが Z に伸びた）。(2) field001 は正しい分割でも `single_population`（異種接触が生で 1 つだけで、その緑側が Z 端）。契約の完了条件 3 の「field001 が single_population でなくなる」は**達成していない**が、相見積もり両者とも「接触の有無を合否条件にしない」（正しい分割でも 0 になり得る）。(3) `field_summary.csv` の `contacts.<集団>__<集団>` 列は存在する接触の組み合わせだけ出る（`contacts.Cirl-mCherry__Cirl-mCherry` が新たに出る視野がある）。nd2fig が当てにしている列（`mixing_index`・`mixing_qc` ほか）は変えていない
-- **検証**: pytest 522 passed / 3 skipped / 4 deselected（既定、ML 除く、7 分 49 秒）。目視: `twofield_both_abs1000/review/field00{0,1}_compare.png` と `onefield020_abs1000/review/field020_compare.png`。数: 下の「結果 2」の表（緑のみ・max p99・max 赤 1000 の 3 者比較と、細胞ごとの前後対応）
+- **済**: 赤の正規化を Codex（GPT-6）と Fable に相見積もり → 両者一致で「赤の上側を絶対値 1000 カウントで固定」。`normalization_by_channel` と `upper_value` を実装（commit `8eed11d`、pytest 522 passed / 3 skipped）。2 視野＋field020 で合格。**全 25 視野を `output/allfields_both/` に出した**（2026-09-13 13:47〜14:33 JST、45 分 51 秒 = 1 視野 1.8 分、エラーなし、2408 細胞）
+- **nd2fig への出力先**: `output/allfields_both/measurements/`（`objects.csv`・`aggregates.csv`・`contacts.csv`・`field_summary.csv`・`localization_profiles.csv`）と `output/allfields_both/run_manifest.json`（run_id `e6b99752284d4b9590b8baa783bcac93`）。review 画像は `output/allfields_both/review/field0NN_compare.png`。nd2fig が当てにしている列は全部ある（確認済み）。列の意味・座標の決まりは変えていない
+- **次の一手**: nd2fig 側（Phase 7 の橋）がこの出力を読む。Shogo が視野ごとの表（下の「結果 2 > 全視野」）と review 画像を見て納得すれば、この契約は DONE にしてよい。`main` は触っていない（push もしていない）
+- **未解決/注意**: (1) 暗い赤だけの細胞（赤の中央値 50〜60 カウント）は拾わない（設計上の優先順位: Z 伸びの回避 > 暗い赤の検出）。(2) 25 視野中 10 視野が `single_population`（赤を含む有効な接触が 0）。field001 のように正しい分割でも 0 になる例がある。契約の完了条件 3 の「field001 が single_population でなくなる」は未達だが、相見積もり両者とも「接触の有無を合否条件にしない」。(3) `field_summary.csv` の `contacts.<集団>__<集団>` 列は存在する組み合わせだけ出る（全視野版には 3 列ある）。(4) `upper_value: 1000` はこの ND2 の検出器設定に対する値。別ファイルには測り直してから
+- **検証**: pytest 522 passed / 3 skipped / 4 deselected（既定、ML 除く）。目視: 2 視野＋field020 の試行と、全視野版の field006・012・017。数: 「結果 2」の表。決定性: field000/001/020 は単独実行と全視野版で細胞数・mCherry 数が完全一致
 
 ## 結果（作業した AI が書く）
 
@@ -206,4 +207,52 @@ field000 の生データで、赤チャンネルの 99 パーセンタイルは 
 ### 時間
 
 - max 赤1000 の 2 視野: 759 秒（pytest と一部同時）= 1 視野 約 6.3 分。field020 単独: 537 秒
-- 全 25 視野: 13:47 JST 開始（結果は下に追記）
+- 全 25 視野: **45 分 51 秒**（13:47:21〜14:33:12 JST、単独実行、1 視野 1.8 分）。前回の見積もり「1 視野 9 分・約 4 時間」は pytest や別の cellpose と同時に回していたときの値で、単独ならこの速さ
+
+### 全視野の run（`output/allfields_both/`、`configs/cirl_gfp_vs_cirl_m_both.yaml`、赤 `upper_value: 1000`）
+
+条件: データ `Cirl(V5)_GFP_vs_Cirl_m.nd2` 全 25 視野、ボクセル 0.632 × 0.632 × 2.0 µm、Z 11 枚、cyto3、2.5D stitch 0.3、直径 10 µm、緑 1–99% / 赤 1%–1000 カウント、max 合成。
+run_id `e6b99752284d4b9590b8baa783bcac93`、status complete、warnings なし（stderr は torch の sparse 警告のみ）。
+「mCh Z ≥18 µm」= Z 範囲が 9 面以上の mCherry 細胞の数（Z 伸びの目印。1–99 の設定では 8〜11 面に伸びる細胞が多数だった）。「接触の総数」= `n_qualifying_contacts`。体積は `volume_um3`。
+
+| 視野 | 細胞数 | GFP | mCherry | 曖昧 | mCh Z 範囲中央値 µm | mCh Z ≥18 µm | mCh Z 端率 | GFP Z 端率 | mCh 体積中央値 µm³ | 異種接触（生） | 異種接触（有効） | 接触の総数 | mixing_index / qc |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| field000 | 113 | 72 | 18 | 21 | 8 | 0 | 39% | 17% | 376 | 4 | 2 | 17 | 0.57 |
+| field001 | 104 | 68 | 18 | 17 | 10 | 0 | 33% | 34% | 284 | 1 | 0 | 10 | single_population |
+| field002 | 99 | 75 | 10 | 13 | 6 | 0 | 50% | 27% | 153 | 1 | 0 | 8 | single_population |
+| field003 | 96 | 56 | 23 | 16 | 8 | 1 | 43% | 27% | 372 | 1 | 1 | 6 | 0.44 |
+| field004 | 108 | 72 | 25 | 11 | 10 | 0 | 44% | 26% | 608 | 5 | 2 | 10 | 1.11 |
+| field005 | 80 | 52 | 15 | 13 | 14 | 0 | 53% | 27% | 807 | 2 | 1 | 2 | 1.33 |
+| field006 | 106 | 66 | 21 | 18 | 12 | 1 | 10% | 35% | 503 | 4 | 2 | 10 | 0.48 |
+| field007 | 78 | 54 | 8 | 15 | 10 | 0 | 62% | 31% | 354 | 2 | 0 | 2 | single_population |
+| field008 | 97 | 65 | 16 | 14 | 10 | 0 | 19% | 28% | 312 | 4 | 3 | 8 | 1.23 |
+| field009 | 119 | 89 | 16 | 13 | 13 | 1 | 6% | 16% | 797 | 4 | 4 | 15 | 1.15 |
+| field010 | 107 | 78 | 13 | 15 | 13 | 0 | 46% | 18% | 500 | 1 | 0 | 12 | 0.00 |
+| field011 | 94 | 65 | 12 | 12 | 11 | 0 | 67% | 26% | 623 | 1 | 0 | 5 | single_population |
+| field012 | 109 | 79 | 19 | 8 | 8 | 0 | 21% | 35% | 380 | 2 | 0 | 11 | 0.00 |
+| field013 | 79 | 50 | 11 | 16 | 3 | 0 | 64% | 28% | 229 | 3 | 0 | 2 | single_population |
+| field014 | 71 | 49 | 10 | 8 | 10 | 1 | 40% | 37% | 469 | 2 | 0 | 6 | single_population |
+| field015 | 86 | 68 | 10 | 8 | 11 | 0 | 30% | 32% | 453 | 1 | 0 | 7 | single_population |
+| field016 | 107 | 75 | 13 | 18 | 13 | 2 | 0% | 27% | 594 | 3 | 3 | 8 | 1.23 |
+| field017 | 103 | 59 | 31 | 13 | 12 | 1 | 39% | 25% | 540 | 7 | 3 | 5 | 1.20 |
+| field018 | 104 | 78 | 12 | 9 | 14 | 0 | 50% | 24% | 542 | 7 | 2 | 7 | 1.17 |
+| field019 | 100 | 72 | 17 | 9 | 10 | 2 | 12% | 14% | 400 | 4 | 4 | 16 | 0.82 |
+| field020 | 75 | 60 | 11 | 4 | 7 | 2 | 18% | 30% | 420 | 0 | 0 | 5 | single_population |
+| field021 | 84 | 58 | 13 | 13 | 11 | 0 | 69% | 40% | 633 | 1 | 0 | 3 | single_population |
+| field022 | 103 | 60 | 20 | 21 | 7 | 0 | 60% | 28% | 297 | 5 | 1 | 8 | 1.07 |
+| field023 | 99 | 61 | 22 | 15 | 11 | 1 | 41% | 31% | 569 | 2 | 0 | 8 | 0.00 |
+| field024 | 87 | 61 | 8 | 13 | 9 | 0 | 75% | 39% | 466 | 1 | 0 | 2 | single_population |
+
+合計: 2408 細胞（GFP 1642、mCherry 392、曖昧 333）。mixing_index が出た視野 15、`single_population` 10。有効な異種接触の合計 28。
+mCherry で Z ≥18 µm は 392 個中 12 個（3%）。mCherry の Z 端率は中央値 41%（0〜75%）で、緑のみの分割の field000（41%）と同程度。
+
+目視（全視野版の review 画像）: field006・field012・field017 の outlines パネルを見た。赤だけの細胞に輪郭が付き、緑の細胞の輪郭は従来どおり。
+暗い膜局在の緑細胞で内側に小さい別ラベルが乗る箇所が各視野 1〜3 か所ある（緑のみの分割にもある既知の癖）。
+
+決定性: field000・field001・field020 は単独実行（`twofield_both_abs1000/`・`onefield020_abs1000/`）と全視野版で細胞数・mCherry 数が完全一致（113/18、104/18、75/11）。
+
+### Shogo に見てほしいこと
+
+1. 上の表と `output/allfields_both/review/` の画像。納得すればこの契約は DONE
+2. `single_population` が 10 視野ある。赤を含む有効な接触が 0 という意味で、「集団が 1 つ」ではない（計測側の表示の話。前回の「決めてほしいこと 2」と同じ）
+3. 暗い赤だけの細胞を拾わない優先順位でよいか（拾うなら Z 伸びと引き換えになる）
