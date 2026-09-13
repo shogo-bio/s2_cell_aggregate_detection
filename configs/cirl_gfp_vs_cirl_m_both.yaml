@@ -65,8 +65,28 @@ segmentation:
       # clean outlines, ~50 s/field.
       stitch_threshold: 0.3
   min_cell_volume_um3: 50.0
+  # Objects thinner than 3 Z planes (6 um) that do not touch the Z border are
+  # not cells (a 10 um cell spans ~5 planes at 2 um). Decided 2026-09-13 after
+  # a clump of sub-cellular particles was chopped into 1-2 plane "cells" and
+  # became the largest "aggregate" of field001.
+  min_z_extent_planes: 3
 
 measurement:
+  # Population call (2026-09-13, decided with Shogo from the 25-field brightness
+  # distributions; see docs/tasks/2026-09-13-population-threshold-and-debris.md):
+  # a channel is "lit" above an absolute floor (counts above background; the
+  # green histogram is bimodal with its valley at 110-190, the red floor sits
+  # above the ~2% green->red bleed). With both lit, red/green <= 0.03 is
+  # Cirl-GFP, >= 0.75 is Cirl-mCherry (mCherry leaks ~1x into the green
+  # channel at this detector gain), and the band in between is reported as
+  # "double_signal" -- a third class (e.g. autofluorescent/dead cells) kept out
+  # of the mixing index. Floors can be overridden per field under per_field.
+  population:
+    method: intensity_ratio
+    min_intensity_above_background: {green: 150, red: 100}
+    ratio_low: 0.03
+    ratio_high: 0.75
+    double_label: double_signal
   optics:
     axial_fwhm_um: 0.7
     lateral_fwhm_um: 0.25

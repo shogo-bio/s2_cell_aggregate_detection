@@ -248,12 +248,29 @@ def compute_measurements(
         # one. Background-relative so FITC's much higher raw brightness does not
         # sweep every cell into the green group.
         if any(c.population for c in image.channels):
-            population_rows = populations_metrics.assign_populations(
-                cells,
-                {c.channel_id: image.channel(c.channel_id) for c in image.channels
-                 if c.population},
-                image.channels,
-            )
+            pop_cfg = config.population
+            pop_channels = {
+                c.channel_id: image.channel(c.channel_id) for c in image.channels
+                if c.population
+            }
+            if pop_cfg.method == "intensity_ratio":
+                population_rows = populations_metrics.assign_populations_by_intensity_ratio(
+                    cells,
+                    pop_channels,
+                    image.channels,
+                    floors=pop_cfg.floors_for(field_id),
+                    ratio_low=pop_cfg.ratio_low,
+                    ratio_high=pop_cfg.ratio_high,
+                    double_label=pop_cfg.double_label,
+                )
+            else:
+                population_rows = populations_metrics.assign_populations(
+                    cells,
+                    pop_channels,
+                    image.channels,
+                    min_score=pop_cfg.min_score_mad,
+                    dominance_ratio=pop_cfg.dominance_ratio,
+                )
 
         intensity_rows = intensity_metrics.compute_intensity(
             image,
@@ -398,7 +415,10 @@ def compute_measurements(
             if row.get("population") is not None
         }
         field_values.update(
-            populations_metrics.compute_mixing(contact_records, cell_population)
+            populations_metrics.compute_mixing(
+                contact_records, cell_population,
+                non_population_labels=frozenset({config.population.double_label}),
+            )
         )
     field_summaries: tuple = ()
     if field_values:

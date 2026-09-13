@@ -34,6 +34,7 @@ POPULATION_COLOURS: dict[str, tuple[float, float, float]] = {
     "Cirl-GFP": (0.2, 1.0, 0.2),
     "Cirl-mCherry": (1.0, 0.25, 0.25),
     "ambiguous": (1.0, 0.75, 0.1),
+    "double_signal": (0.85, 0.3, 1.0),
     "unassigned": (0.6, 0.6, 0.6),
 }
 

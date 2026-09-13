@@ -34,6 +34,104 @@ from numpy.typing import NDArray
 from ..contracts import ChannelBinding, ContactRecord, Scalar
 
 UNASSIGNED = "unassigned"
+AMBIGUOUS = "ambiguous"
+# Labels that are not a population: cells carrying them never enter the
+# mixing index or the homotypic/heterotypic contact counts. The configured
+# ``double_label`` is added at call time.
+_NON_POPULATION_BASE = frozenset({UNASSIGNED, AMBIGUOUS})
+
+
+def _is_population(label: str | None, extra_non_population: frozenset[str]) -> bool:
+    return label is not None and label not in _NON_POPULATION_BASE and label not in extra_non_population
+
+
+def _median_above_background(
+    intensity: NDArray[np.floating], mask: NDArray[np.bool_], outside: NDArray[np.bool_]
+) -> float:
+    """Cell median minus the channel's background median (counts)."""
+    if not mask.any():
+        return 0.0
+    bg = intensity[outside]
+    background = float(np.median(bg)) if bg.size else 0.0
+    return float(np.median(intensity[mask])) - background
+
+
+def assign_populations_by_intensity_ratio(
+    labels: NDArray[np.uint32],
+    channels: Mapping[str, NDArray[np.floating]],
+    channel_bindings: Sequence[ChannelBinding],
+    *,
+    floors: Mapping[str, float],
+    ratio_low: float,
+    ratio_high: float,
+    double_label: str = "double_signal",
+) -> dict[int, dict[str, Scalar]]:
+    """Two-population call from absolute floors and the second/first ratio.
+
+    See ``config.PopulationAssignmentConfig`` for the rule. Populations are
+    ordered by the first channel binding that names each of them, so with
+    ``green`` bound before ``red`` the ratio is red/green.
+
+    Per cell the row carries ``pop_intensity.<channel>`` (median above
+    background, counts), ``pop_ratio`` (second/first intensity, ``None``
+    when the first is <= 0), ``population`` and ``population_qc``.
+    """
+    ordered_pops: list[str] = []
+    pop_channels: dict[str, list[str]] = defaultdict(list)
+    for binding in channel_bindings:
+        if binding.population and binding.channel_id in channels:
+            if binding.population not in ordered_pops:
+                ordered_pops.append(binding.population)
+            pop_channels[binding.population].append(binding.channel_id)
+    if len(ordered_pops) != 2:
+        raise ValueError(
+            f"intensity_ratio assignment needs exactly two populations, got {ordered_pops}"
+        )
+    first, second = ordered_pops
+    outside = labels == 0
+    out: dict[int, dict[str, Scalar]] = {}
+    cell_ids = np.unique(labels)
+    cell_ids = cell_ids[cell_ids > 0]
+
+    for cell_id in cell_ids:
+        mask = labels == cell_id
+        intensity = {
+            cid: _median_above_background(channels[cid], mask, outside)
+            for cids in pop_channels.values() for cid in cids
+        }
+        row: dict[str, Scalar] = {
+            f"pop_intensity.{cid}": round(v, 2) for cid, v in intensity.items()
+        }
+        # A population's intensity is its brightest channel, in units of that
+        # channel's floor; "lit" means >= 1.
+        def best(pop: str) -> tuple[float, float]:
+            scores = [(intensity[cid] / floors[cid] if floors[cid] > 0 else float("inf"),
+                       intensity[cid]) for cid in pop_channels[pop]]
+            return max(scores)
+        (s1, i1), (s2, i2) = best(first), best(second)
+        lit1, lit2 = s1 >= 1.0, s2 >= 1.0
+        ratio = (i2 / i1) if i1 > 0 else None
+        row["pop_ratio"] = None if ratio is None else round(ratio, 4)
+        if not lit1 and not lit2:
+            row["population"] = UNASSIGNED
+            row["population_qc"] = "below_intensity_floor"
+        elif lit1 and not lit2:
+            row["population"] = first
+            row["population_qc"] = None
+        elif lit2 and not lit1:
+            row["population"] = second
+            row["population_qc"] = None
+        elif ratio is not None and ratio <= ratio_low:
+            row["population"] = first
+            row["population_qc"] = "both_lit_ratio_low"
+        elif ratio is not None and ratio >= ratio_high:
+            row["population"] = second
+            row["population_qc"] = "both_lit_ratio_high"
+        else:
+            row["population"] = double_label
+            row["population_qc"] = "both_lit_ratio_between"
+        out[int(cell_id)] = row
+    return out
 
 
 def _background_relative_score(
@@ -132,6 +230,8 @@ def assign_populations(
 def compute_mixing(
     contacts: Sequence[ContactRecord],
     cell_population: Mapping[int, str],
+    *,
+    non_population_labels: frozenset[str] = frozenset(),
 ) -> dict[str, Scalar]:
     """Field-level mixing statistics from the qualifying contact graph.
 
@@ -151,9 +251,8 @@ def compute_mixing(
             continue
         pa = cell_population.get(c.cell_id_a)
         pb = cell_population.get(c.cell_id_b)
-        if pa is None or pb is None:
-            continue
-        if pa in (UNASSIGNED, "ambiguous") or pb in (UNASSIGNED, "ambiguous"):
+        if not (_is_population(pa, non_population_labels)
+                and _is_population(pb, non_population_labels)):
             continue
         edges.append(tuple(sorted((pa, pb))))
 
@@ -206,15 +305,16 @@ def compute_mixing(
 def label_contacts_by_population(
     contacts: Sequence[ContactRecord],
     cell_population: Mapping[int, str],
+    *,
+    non_population_labels: frozenset[str] = frozenset(),
 ) -> dict[tuple[int, int], dict[str, Scalar]]:
     """Tag each contact with the populations it joins and whether it is heterotypic."""
     out: dict[tuple[int, int], dict[str, Scalar]] = {}
     for c in contacts:
         pa = cell_population.get(c.cell_id_a, UNASSIGNED)
         pb = cell_population.get(c.cell_id_b, UNASSIGNED)
-        known = pa not in (UNASSIGNED, "ambiguous") and pb not in (
-            UNASSIGNED,
-            "ambiguous",
+        known = _is_population(pa, non_population_labels) and _is_population(
+            pb, non_population_labels
         )
         out[(c.cell_id_a, c.cell_id_b)] = {
             "population_a": pa,

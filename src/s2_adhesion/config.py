@@ -431,8 +431,58 @@ class LocalizationConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class PopulationAssignmentConfig:
+    """How each cell is assigned to one of the configured populations.
+
+    ``method``:
+
+    * ``"background_mad"`` (default, historical): a channel votes for its
+      population when the cell's mean exceeds the channel background by
+      ``min_score_mad`` MADs; the best population must beat the runner-up
+      by ``dominance_ratio`` or the cell is ``"ambiguous"``. Known weakness on
+      this data: a channel whose background is exactly 0 (red) gets MAD
+      floored to 1.0, so its score is inflated ~4x against green and the
+      call skews red.
+    * ``"intensity_ratio"``: for exactly two populations. Each channel is
+      "lit" when the cell's median exceeds the channel background by
+      ``min_intensity_above_background[channel]`` counts (an absolute floor,
+      chosen from the brightness histogram; overridable per field via
+      ``per_field``). Neither lit -> ``"unassigned"``; one lit -> that
+      population; both lit -> decided by the ratio second/first (populations
+      in channel order): ``<= ratio_low`` first population, ``>= ratio_high``
+      second population, in between -> ``double_label`` (a third class:
+      both signals present in the same place, e.g. autofluorescent or dead
+      cells; excluded from the mixing index like ``"unassigned"``).
+
+    Measured motivation (2026-09-13, 25 fields): pure Cirl-GFP cells have
+    red/green < 0.03, pure Cirl-mCherry cells have red/green ~1 (mCherry
+    leaks into the green channel at the high detector gain used), and a
+    large group in between (0.03-0.75) carries both signals with identical
+    spatial pattern.
+    """
+
+    method: Literal["background_mad", "intensity_ratio"] = "background_mad"
+    min_score_mad: float = 3.0
+    dominance_ratio: float = 1.5
+    min_intensity_above_background: Mapping[str, float] = field(default_factory=dict)
+    ratio_low: float = 0.03
+    ratio_high: float = 0.75
+    double_label: str = "double_signal"
+    per_field: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+
+    def floors_for(self, field_id: str) -> dict[str, float]:
+        """Per-channel floors with this field's overrides applied."""
+        floors = dict(self.min_intensity_above_background)
+        floors.update(self.per_field.get(field_id, {}))
+        return floors
+
+
+@dataclass(frozen=True, slots=True)
 class MeasurementConfig:
     optics: OpticsConfig = field(default_factory=OpticsConfig)
+    population: PopulationAssignmentConfig = field(
+        default_factory=PopulationAssignmentConfig
+    )
     saturation: SaturationConfig = field(default_factory=SaturationConfig)
     contact: ContactConfig = field(default_factory=ContactConfig)
     background: BackgroundConfig = field(default_factory=BackgroundConfig)
@@ -651,6 +701,56 @@ def _validate_normalization(norm: NormalizationConfig, where: str) -> None:
         )
 
 
+def _validate_population(config: PipelineConfig) -> None:
+    pop = config.measurement.population
+    where = "measurement.population"
+    pop_channels = {c.channel_id: c.population for c in config.channels if c.population}
+    if pop.method not in ("background_mad", "intensity_ratio"):
+        raise ConfigError(
+            f"{where}.method: {pop.method!r} is not one of "
+            "['background_mad', 'intensity_ratio']"
+        )
+    if pop.dominance_ratio < 1.0:
+        raise ConfigError(f"{where}.dominance_ratio must be >= 1, got {pop.dominance_ratio}")
+    if not 0.0 < pop.ratio_low < pop.ratio_high:
+        raise ConfigError(
+            f"{where}: need 0 < ratio_low < ratio_high, got {pop.ratio_low} / {pop.ratio_high}"
+        )
+    if pop.double_label in set(pop_channels.values()) | {"unassigned", "ambiguous"}:
+        raise ConfigError(f"{where}.double_label {pop.double_label!r} collides with a population name")
+    tables: list[tuple[str, Mapping[str, float]]] = [
+        (f"{where}.min_intensity_above_background", pop.min_intensity_above_background)
+    ]
+    if not isinstance(pop.per_field, Mapping):
+        raise ConfigError(f"{where}.per_field must be a mapping field_id -> {{channel: counts}}")
+    for field_id, table in pop.per_field.items():
+        if not isinstance(table, Mapping):
+            raise ConfigError(f"{where}.per_field[{field_id!r}] must be a mapping channel -> counts")
+        tables.append((f"{where}.per_field[{field_id!r}]", table))
+    for label, table in tables:
+        for cid, value in table.items():
+            if cid not in pop_channels:
+                raise ConfigError(
+                    f"{label} names channel {cid!r}, which is not a configured channel "
+                    f"with a population (those are {sorted(pop_channels)})"
+                )
+            if not isinstance(value, (int, float)) or value < 0:
+                raise ConfigError(f"{label}[{cid!r}] must be a number >= 0, got {value!r}")
+    if pop.method == "intensity_ratio":
+        populations = sorted(set(pop_channels.values()))
+        if len(populations) != 2:
+            raise ConfigError(
+                f"{where}.method 'intensity_ratio' needs exactly two populations, "
+                f"got {populations}"
+            )
+        missing = [cid for cid in pop_channels if cid not in pop.min_intensity_above_background]
+        if missing:
+            raise ConfigError(
+                f"{where}.min_intensity_above_background must give a floor for every "
+                f"population channel in 'intensity_ratio' mode; missing {missing}"
+            )
+
+
 def validate_config(config: PipelineConfig) -> None:
     """Cross-field checks that a per-field schema cannot express."""
     ids = [c.channel_id for c in config.channels]
@@ -665,6 +765,8 @@ def validate_config(config: PipelineConfig) -> None:
         if cid not in known:
             raise ConfigError(f"{why} names channel {cid!r}, which is not configured "
                               f"(configured: {sorted(known)})")
+
+    _validate_population(config)
 
     seg = config.segmentation
     if config.analysis_backend == "ml_instance_3d" and seg is None:
