@@ -36,6 +36,24 @@ segmentation:
   input_channel_ids: [green, red]
   channel_combination: max
   model:
+    # Green keeps the validated 1-99 percentile rule. Red gets an ABSOLUTE
+    # upper bound instead of a percentile (decided 2026-09-13 after a
+    # cross-model consult; see docs/tasks/2026-09-13-segment-both-populations.md):
+    # red cells are sparse (~0.5% of voxels), so any whole-stack percentile of
+    # the red channel measures how many red cells the field has, not how
+    # bright they are -- over the 25 fields of this file the red 99.9th
+    # percentile tracks the red cell count (r = 0.88) and spans 442-1233,
+    # while the bright-cell level (p90 inside red objects >= 300 counts) is
+    # stable at 726-1191, median ~950. With the old 1-99 rule (p99 ~ 160) the
+    # out-of-focus halo of every red cell was clipped to full brightness and
+    # the 2.5D stitch grew red cells across all 11 Z planes (-> Z-border ->
+    # excluded from contact metrics). 1000 counts puts a bright red core at
+    # ~0.95, a typical core at 0.2-0.35 (same band as green cores) and the
+    # halo (~150) at 0.15. Valid for THIS acquisition's detector settings
+    # only; re-measure before reusing on another nd2.
+    normalization_by_channel:
+      - channel_id: red
+        upper_value: 1000
     package_major: 3
     model_name: cyto3
     device: cpu

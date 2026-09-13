@@ -26,6 +26,8 @@ resampled/model grid never escapes this module.
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 from numpy.typing import NDArray
 from scipy import ndimage
@@ -35,18 +37,39 @@ from ..contracts import ImageVolume
 from ..errors import ContractViolation
 from .protocol import PreparedCellposeInput
 
+_log = logging.getLogger(__name__)
+
+
+def normalization_bounds(
+    channel: NDArray[np.generic], config: NormalizationConfig
+) -> tuple[float, float]:
+    """The ``(lo, hi)`` intensities that map to 0 and 1 for ``channel``.
+
+    ``lo`` is always a percentile of the whole channel. ``hi`` is the
+    configured absolute ``upper_value`` when given, else the upper percentile.
+    Exposed so a run can record which bounds were actually used per field --
+    with a percentile rule they differ from field to field.
+    """
+    data = np.asarray(channel, dtype=np.float64)
+    lo = float(np.percentile(data, config.lower_percentile))
+    if config.upper_value is not None:
+        hi = float(config.upper_value)
+    else:
+        hi = float(np.percentile(data, config.upper_percentile))
+    return lo, hi
+
 
 def _normalize_percentile(
     channel: NDArray[np.generic], config: NormalizationConfig
 ) -> NDArray[np.float32]:
-    """Percentile-normalise one channel to roughly [0, 1].
+    """Normalise one channel to roughly [0, 1] (see :func:`normalization_bounds`).
 
-    A degenerate channel (upper percentile <= lower percentile, e.g. a flat
-    background-only crop) maps to all zeros rather than dividing by zero.
+    A degenerate channel (``hi <= lo``, e.g. a flat background-only crop, or
+    an absolute ``upper_value`` below the background) maps to all zeros rather
+    than dividing by zero.
     """
     data = np.asarray(channel, dtype=np.float64)
-    lo = float(np.percentile(data, config.lower_percentile))
-    hi = float(np.percentile(data, config.upper_percentile))
+    lo, hi = normalization_bounds(data, config)
     if hi <= lo:
         return np.zeros_like(data, dtype=np.float32)
     normalized = (data - lo) / (hi - lo)
@@ -135,13 +158,22 @@ def prepare_cellpose_input(
     norm_config = direct_config.model.normalization
     combination = direct_config.channel_combination
 
-    resampled_channels = [
-        _resample_inplane(
-            _normalize_percentile(image.channel(cid), norm_config),
-            image.geometry.spacing_um_zyx,
+    resampled_channels = []
+    for cid in channel_ids:
+        raw = image.channel(cid)
+        cfg = direct_config.model.normalization_for(cid)
+        lo, hi = normalization_bounds(raw, cfg)
+        _log.info(
+            "normalise field=%s channel=%s lo=%.1f (p%g) hi=%.1f (%s) clip=%s",
+            image.identity.field_id, cid, lo, cfg.lower_percentile, hi,
+            "absolute" if cfg.upper_value is not None else f"p{cfg.upper_percentile:g}",
+            cfg.clip,
         )
-        for cid in channel_ids
-    ]
+        resampled_channels.append(
+            _resample_inplane(
+                _normalize_percentile(raw, cfg), image.geometry.spacing_um_zyx
+            )
+        )
     stacked = np.stack(resampled_channels, axis=0)
     if combination != "stack":
         stacked = combine_channels(stacked, combination, norm_config)

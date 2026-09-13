@@ -191,6 +191,128 @@ class TestChannelCombination:
         assert cfg.segmentation.channel_combination == "max"
 
 
+class TestPerChannelNormalizationConfig:
+    BASE = """
+    schema_version: s2-pipeline-config/v1
+    channels:
+      - {channel_id: green, source_index: 0, roles: [signal]}
+      - {channel_id: red, source_index: 1, roles: [signal]}
+    segmentation:
+      strategy: direct_cellpose
+      input_channel_ids: [green, red]
+      channel_combination: max
+      model:
+        package_major: 3
+        model_name: cyto3
+    """
+
+    def test_override_loads_and_inherits_the_common_rule(self, tmp_path):
+        cfg = load_config(write(tmp_path, self.BASE + """
+        normalization: {lower_percentile: 2, upper_percentile: 98}
+        normalization_by_channel:
+          - {channel_id: red, upper_value: 1000}
+        """))
+        model = cfg.segmentation.model
+        assert model.normalization_for("green").upper_value is None
+        red = model.normalization_for("red")
+        assert red.upper_value == 1000
+        assert red.lower_percentile == 2
+        assert red.clip is True
+
+    def test_override_of_an_unconfigured_channel_is_rejected(self, tmp_path):
+        bad = self.BASE + """
+        normalization_by_channel:
+          - {channel_id: blue, upper_value: 1000}
+        """
+        with pytest.raises(ConfigError, match="'blue'.*not in input_channel_ids"):
+            load_config(write(tmp_path, bad))
+
+    def test_same_channel_overridden_twice_is_rejected(self, tmp_path):
+        bad = self.BASE + """
+        normalization_by_channel:
+          - {channel_id: red, upper_value: 1000}
+          - {channel_id: red, upper_percentile: 99.9}
+        """
+        with pytest.raises(ConfigError, match="overridden twice"):
+            load_config(write(tmp_path, bad))
+
+    def test_two_upper_bounds_in_one_override_is_rejected(self, tmp_path):
+        bad = self.BASE + """
+        normalization_by_channel:
+          - {channel_id: red, upper_value: 1000, upper_percentile: 99.9}
+        """
+        with pytest.raises(ConfigError, match="not both"):
+            load_config(write(tmp_path, bad))
+
+    def test_unknown_override_key_is_rejected(self, tmp_path):
+        bad = self.BASE + """
+        normalization_by_channel:
+          - {channel_id: red, upper_counts: 1000}
+        """
+        with pytest.raises(ConfigError, match="unknown key"):
+            load_config(write(tmp_path, bad))
+
+    def test_non_positive_upper_value_is_rejected(self, tmp_path):
+        bad = self.BASE + """
+        normalization_by_channel:
+          - {channel_id: red, upper_value: 0}
+        """
+        with pytest.raises(ConfigError, match="upper_value must be > 0"):
+            load_config(write(tmp_path, bad))
+
+    def test_percentiles_out_of_order_are_rejected(self, tmp_path):
+        bad = self.BASE + """
+        normalization: {lower_percentile: 99, upper_percentile: 1}
+        """
+        with pytest.raises(ConfigError, match="lower_percentile < upper_percentile"):
+            load_config(write(tmp_path, bad))
+
+    def test_overrides_with_sum_merge_are_rejected(self, tmp_path):
+        """sum re-normalises the merged image with the COMMON rule, which
+        would silently undo a per-channel override."""
+        bad = self.BASE.replace("channel_combination: max", "channel_combination: sum") + """
+        normalization_by_channel:
+          - {channel_id: red, upper_value: 1000}
+        """
+        with pytest.raises(ConfigError, match="cannot be combined with channel_combination 'sum'"):
+            load_config(write(tmp_path, bad))
+
+    def test_overrides_work_with_stack_too(self, tmp_path):
+        cfg = load_config(write(tmp_path, self.BASE.replace(
+            "channel_combination: max", "channel_combination: stack") + """
+        normalization_by_channel:
+          - {channel_id: red, clip: false}
+        """))
+        assert cfg.segmentation.model.normalization_for("red").clip is False
+
+    def test_nucleus_watershed_rejects_the_direct_cellpose_only_knobs(self, tmp_path):
+        bad = MINIMAL + "  seed_model:\n    normalization: {upper_value: 1000}\n"
+        with pytest.raises(ConfigError, match="only applied by the direct_cellpose"):
+            load_config(write(tmp_path, bad))
+
+    def test_stardist_rejects_upper_value(self, tmp_path):
+        bad = """
+        schema_version: s2-pipeline-config/v1
+        channels:
+          - {channel_id: mem, source_index: 0, roles: [membrane]}
+        segmentation:
+          strategy: direct_stardist
+          input_channel_ids: [mem]
+          model:
+            pretrained_name: 3D_demo
+            normalization: {upper_value: 1000}
+        """
+        with pytest.raises(ConfigError, match="only applied by the direct_cellpose"):
+            load_config(write(tmp_path, bad))
+
+    def test_shipped_both_populations_config_fixes_red_at_1000_counts(self):
+        cfg = load_config(Path("configs/cirl_gfp_vs_cirl_m_both.yaml"))
+        model = cfg.segmentation.model
+        assert model.normalization_for("red").upper_value == 1000
+        assert model.normalization_for("green") == model.normalization
+        assert model.normalization.upper_percentile == 99.0
+
+
 class TestContactEstimatorGuard:
     def test_default_is_marching_cubes_with_isotropic_resampling(self, tmp_path):
         c = load_config(write(tmp_path, MINIMAL)).measurement.contact

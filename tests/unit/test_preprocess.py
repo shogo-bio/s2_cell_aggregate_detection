@@ -11,12 +11,18 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from s2_adhesion.config import CellposeModelConfig, DirectInstanceConfig, NormalizationConfig
+from s2_adhesion.config import (
+    CellposeModelConfig,
+    ChannelNormalizationOverride,
+    DirectInstanceConfig,
+    NormalizationConfig,
+)
 from s2_adhesion.contracts import ChannelRole, ContractViolation
 from s2_adhesion.segmentation.preprocess import (
     combine_channels,
     combined_channel_id,
     map_labels_to_original_grid,
+    normalization_bounds,
     prepare_cellpose_input,
 )
 from s2_adhesion.segmentation.protocol import PreparedCellposeInput
@@ -346,6 +352,143 @@ class TestMapLabelsToOriginalGrid:
         mapped = map_labels_to_original_grid(model_labels, prepared)
 
         np.testing.assert_array_equal(mapped, model_labels)
+
+
+class TestPerChannelNormalization:
+    """``normalization_by_channel``: one channel may depart from the common
+    percentile rule -- here, an absolute upper bound for a sparse population
+    whose whole-stack percentiles measure cell count rather than brightness."""
+
+    @staticmethod
+    def _config(overrides=(), combination="max", common=None):
+        model = CellposeModelConfig(
+            normalization=common or NormalizationConfig(),
+            normalization_by_channel=tuple(overrides),
+        )
+        return DirectInstanceConfig(
+            strategy="direct_cellpose",
+            input_channel_ids=("green", "red"),
+            channel_combination=combination,
+            model=model,
+        )
+
+    def test_no_overrides_is_byte_identical_to_the_common_rule(self):
+        image = _two_population_image(np.random.default_rng(20))
+        plain = prepare_cellpose_input(image, self._config()).data
+        empty = prepare_cellpose_input(image, self._config(overrides=())).data
+        np.testing.assert_array_equal(plain, empty)
+
+    def test_absolute_upper_value_applies_only_to_the_named_channel(self):
+        """Red blob is 100 counts. With upper_value=200 it lands at ~0.5,
+        while the green blob (percentile rule, untouched) still reaches 1."""
+        image = _two_population_image(np.random.default_rng(21))
+        config = self._config(
+            overrides=[ChannelNormalizationOverride(channel_id="red", upper_value=200.0)],
+            combination="stack",
+        )
+        prepared = prepare_cellpose_input(image, config).data
+        green, red = prepared[0], prepared[1]
+        assert green[:, 1:4, 1:4].min() == pytest.approx(1.0)
+        # (100 - p1) / (200 - p1) with p1 of the red channel ~ 0..2
+        assert 0.48 <= red[:, 6:9, 6:9].mean() <= 0.51
+        assert red[:, 0:1, :].max() < 0.05
+
+    def test_override_leaves_the_other_channel_array_unchanged(self):
+        image = _two_population_image(np.random.default_rng(22))
+        plain = prepare_cellpose_input(image, self._config(combination="stack")).data
+        with_red = prepare_cellpose_input(
+            image,
+            self._config(
+                overrides=[ChannelNormalizationOverride(channel_id="red", upper_value=50.0)],
+                combination="stack",
+            ),
+        ).data
+        np.testing.assert_array_equal(plain[0], with_red[0])
+        assert not np.array_equal(plain[1], with_red[1])
+
+    def test_override_is_matched_by_id_not_by_position(self):
+        image = _two_population_image(np.random.default_rng(23))
+        override = ChannelNormalizationOverride(channel_id="red", upper_value=200.0)
+        model = CellposeModelConfig(normalization_by_channel=(override,))
+        swapped = DirectInstanceConfig(
+            strategy="direct_cellpose",
+            input_channel_ids=("red", "green"),
+            channel_combination="stack",
+            model=model,
+        )
+        prepared = prepare_cellpose_input(image, swapped).data
+        red, green = prepared[0], prepared[1]
+        assert 0.48 <= red[:, 6:9, 6:9].mean() <= 0.51
+        assert green[:, 1:4, 1:4].min() == pytest.approx(1.0)
+
+    def test_values_above_the_absolute_upper_bound_are_clipped(self):
+        image = _two_population_image(np.random.default_rng(24))
+        config = self._config(
+            overrides=[ChannelNormalizationOverride(channel_id="red", upper_value=50.0)],
+            combination="stack",
+        )
+        red = prepare_cellpose_input(image, config).data[1]
+        assert red.max() == pytest.approx(1.0)
+        assert red[:, 6:9, 6:9].min() == pytest.approx(1.0)
+
+    def test_normalization_bounds_reports_the_absolute_hi(self):
+        data = np.arange(1000, dtype=np.float32).reshape(1, 10, 100)
+        lo, hi = normalization_bounds(data, NormalizationConfig(upper_value=1000.0))
+        assert hi == 1000.0
+        assert lo == pytest.approx(np.percentile(data, 1.0))
+        lo2, hi2 = normalization_bounds(data, NormalizationConfig())
+        assert hi2 == pytest.approx(np.percentile(data, 99.0))
+        assert lo2 == lo
+
+    def test_absolute_bound_below_background_yields_zeros_not_nan(self):
+        data = np.full((1, 1, 4, 4), 500.0, dtype=np.float32)
+        image = make_image_volume(
+            data, spacing=ANISOTROPIC, channel_ids=("membrane",),
+            roles=(ChannelRole.MEMBRANE,),
+        )
+        config = DirectInstanceConfig(
+            strategy="direct_cellpose",
+            input_channel_ids=("membrane",),
+            model=CellposeModelConfig(
+                normalization_by_channel=(
+                    ChannelNormalizationOverride(channel_id="membrane", upper_value=10.0),
+                )
+            ),
+        )
+        prepared = prepare_cellpose_input(image, config)
+        assert np.all(prepared.data == 0.0)
+        assert not np.isnan(prepared.data).any()
+
+
+class TestChannelNormalizationOverrideResolve:
+    def test_unset_fields_inherit_the_common_config(self):
+        base = NormalizationConfig(lower_percentile=2.0, upper_percentile=98.0, clip=False)
+        resolved = ChannelNormalizationOverride(channel_id="red", upper_value=1000.0).resolve(base)
+        assert resolved == NormalizationConfig(
+            lower_percentile=2.0, upper_percentile=98.0, clip=False, upper_value=1000.0
+        )
+
+    def test_explicit_percentile_replaces_an_inherited_absolute_value(self):
+        base = NormalizationConfig(upper_value=1000.0)
+        resolved = ChannelNormalizationOverride(channel_id="red", upper_percentile=99.9).resolve(base)
+        assert resolved.upper_value is None
+        assert resolved.upper_percentile == 99.9
+
+    def test_lower_and_clip_override_independently(self):
+        base = NormalizationConfig()
+        resolved = ChannelNormalizationOverride(
+            channel_id="red", lower_percentile=5.0, clip=False
+        ).resolve(base)
+        assert resolved == NormalizationConfig(lower_percentile=5.0, upper_percentile=99.0, clip=False)
+
+    def test_normalization_for_falls_back_to_the_common_config(self):
+        model = CellposeModelConfig(
+            normalization_by_channel=(
+                ChannelNormalizationOverride(channel_id="red", upper_value=1000.0),
+            )
+        )
+        assert model.normalization_for("green") == model.normalization
+        assert model.normalization_for("red").upper_value == 1000.0
 
 
 def test_importing_preprocess_does_not_import_torch_or_cellpose():

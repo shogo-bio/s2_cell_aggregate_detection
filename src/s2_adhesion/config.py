@@ -39,9 +39,69 @@ from .errors import ConfigError
 
 @dataclass(frozen=True, slots=True)
 class NormalizationConfig:
+    """Percentile normalisation of one channel before it is fed to a model.
+
+    ``x -> (x - lo) / (hi - lo)`` with ``lo`` = ``lower_percentile`` of the
+    whole 3D channel and ``hi`` = ``upper_percentile`` of it, clipped to
+    [0, 1] when ``clip`` is set.
+
+    ``upper_value``: when given, ``hi`` is this ABSOLUTE intensity (detector
+    counts) instead of a percentile, and ``upper_percentile`` is ignored. A
+    percentile of the whole stack is a statistic of how many bright voxels
+    there are, not of how bright a cell is: on this data a sparse population
+    (Cirl-mCherry, ~0.5% of voxels) puts its 99th percentile at ~160 counts,
+    far below the cells (~1000 at their p90), so the 1-99 rule clipped every
+    out-of-focus halo to full brightness and the 2.5D stitch grew each red
+    cell across all Z planes. The bright-cell level itself is stable across
+    fields of one acquisition (measured 726-1191 counts, median ~950, over 25
+    fields), so an absolute cut is the stable choice within one file. It does
+    not transfer to a file acquired with other detector settings -- write it
+    per config, with the acquisition it belongs to.
+    """
+
     lower_percentile: float = 1.0
     upper_percentile: float = 99.0
     clip: bool = True
+    upper_value: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelNormalizationOverride:
+    """Per-channel departure from ``CellposeModelConfig.normalization``.
+
+    Every field except ``channel_id`` is optional; ``None`` inherits the
+    common setting. Only the fields written in the YAML change, so an
+    override that says ``upper_value: 1000`` keeps the common lower
+    percentile and clip. ``upper_percentile`` and ``upper_value`` are
+    mutually exclusive in one override (there is one upper bound).
+    """
+
+    channel_id: str
+    lower_percentile: float | None = None
+    upper_percentile: float | None = None
+    upper_value: float | None = None
+    clip: bool | None = None
+
+    def resolve(self, base: NormalizationConfig) -> NormalizationConfig:
+        """The common config with this override's explicit fields applied."""
+        upper_value = base.upper_value
+        upper_percentile = base.upper_percentile
+        if self.upper_value is not None:
+            upper_value = self.upper_value
+        elif self.upper_percentile is not None:
+            # An explicit percentile in the override means "use a percentile",
+            # even if the common config carried an absolute value.
+            upper_value = None
+            upper_percentile = self.upper_percentile
+        return NormalizationConfig(
+            lower_percentile=(
+                base.lower_percentile if self.lower_percentile is None
+                else self.lower_percentile
+            ),
+            upper_percentile=upper_percentile,
+            clip=base.clip if self.clip is None else self.clip,
+            upper_value=upper_value,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +151,20 @@ class CellposeModelConfig:
     pretrained_model_path: Path | None = None
     expected_model_sha256: str | None = None
     normalization: NormalizationConfig = field(default_factory=NormalizationConfig)
+    # Per-channel overrides of ``normalization`` (direct_cellpose only). Used
+    # when the channels feeding one segmentation have very different
+    # intensity statistics -- e.g. a sparse red population merged with a
+    # dense green one -- and one percentile rule cannot serve both.
+    normalization_by_channel: tuple[ChannelNormalizationOverride, ...] = ()
     eval: CellposeEvalConfig = field(default_factory=CellposeEvalConfig)
+
+    def normalization_for(self, channel_id: str) -> NormalizationConfig:
+        """The normalisation to apply to ``channel_id``: the common config,
+        with that channel's override (if any) applied."""
+        for override in self.normalization_by_channel:
+            if override.channel_id == channel_id:
+                return override.resolve(self.normalization)
+        return self.normalization
 
 
 ChannelCombination: TypeAlias = Literal["stack", "max", "sum"]
@@ -555,6 +628,23 @@ def load_config(path: Path) -> PipelineConfig:
     return cfg
 
 
+def _validate_normalization(norm: NormalizationConfig, where: str) -> None:
+    if not 0.0 <= norm.lower_percentile < 100.0:
+        raise ConfigError(
+            f"{where}.lower_percentile must be in [0, 100), got {norm.lower_percentile}"
+        )
+    if norm.upper_value is None:
+        if not norm.lower_percentile < norm.upper_percentile <= 100.0:
+            raise ConfigError(
+                f"{where}: need lower_percentile < upper_percentile <= 100, got "
+                f"{norm.lower_percentile} / {norm.upper_percentile}"
+            )
+    elif norm.upper_value <= 0:
+        raise ConfigError(
+            f"{where}.upper_value must be > 0 counts, got {norm.upper_value}"
+        )
+
+
 def validate_config(config: PipelineConfig) -> None:
     """Cross-field checks that a per-field schema cannot express."""
     ids = [c.channel_id for c in config.channels]
@@ -586,6 +676,33 @@ def validate_config(config: PipelineConfig) -> None:
                 f"segmentation.channel_combination: {seg.channel_combination!r} "
                 f"is not one of {list(CHANNEL_COMBINATIONS)}"
             )
+        _validate_normalization(seg.model.normalization, "segmentation.model.normalization")
+        seen: set[str] = set()
+        for i, ov in enumerate(seg.model.normalization_by_channel):
+            where = f"segmentation.model.normalization_by_channel[{i}]"
+            if ov.channel_id not in seg.input_channel_ids:
+                raise ConfigError(
+                    f"{where} names channel {ov.channel_id!r}, which is not in "
+                    f"input_channel_ids {list(seg.input_channel_ids)}"
+                )
+            if ov.channel_id in seen:
+                raise ConfigError(
+                    f"{where}: channel {ov.channel_id!r} is overridden twice"
+                )
+            seen.add(ov.channel_id)
+            if ov.upper_percentile is not None and ov.upper_value is not None:
+                raise ConfigError(
+                    f"{where}: give upper_percentile or upper_value, not both "
+                    "(there is one upper bound per channel)"
+                )
+            _validate_normalization(ov.resolve(seg.model.normalization), where)
+        if seg.model.normalization_by_channel and seg.channel_combination == "sum":
+            raise ConfigError(
+                "segmentation.model.normalization_by_channel cannot be combined "
+                "with channel_combination 'sum': the summed image is re-normalised "
+                "with the common settings, which would silently undo the per-channel "
+                "overrides. Use 'max', or drop the overrides."
+            )
         if seg.channel_combination == "stack":
             if seg.model.package_major == 3 and len(seg.input_channel_ids) > 2:
                 raise ConfigError(
@@ -610,6 +727,11 @@ def validate_config(config: PipelineConfig) -> None:
                 "single intensity volume."
             )
         model = seg.model
+        if model.normalization.upper_value is not None:
+            raise ConfigError(
+                "segmentation.model.normalization.upper_value is only applied by "
+                "the direct_cellpose strategy; direct_stardist would silently ignore it"
+            )
         has_pretrained = model.pretrained_name is not None
         has_custom = model.custom_model_dir is not None
         if has_pretrained == has_custom:
@@ -627,6 +749,16 @@ def validate_config(config: PipelineConfig) -> None:
             )
 
     elif isinstance(seg, NucleusSeededWatershedConfig):
+        for label, model in (("seed_model", seg.seed_model), ("extent_model", seg.extent_model)):
+            if model is None:
+                continue
+            if model.normalization_by_channel or model.normalization.upper_value is not None:
+                raise ConfigError(
+                    f"segmentation.{label}: normalization_by_channel and "
+                    "normalization.upper_value are only applied by the "
+                    "direct_cellpose strategy; the nucleus-seeded watershed would "
+                    "silently ignore them"
+                )
         require(seg.nucleus_channel_id, "segmentation.nucleus_channel_id")
         nuc = next(c for c in config.channels if c.channel_id == seg.nucleus_channel_id)
         if not nuc.has_role(ChannelRole.NUCLEUS):
