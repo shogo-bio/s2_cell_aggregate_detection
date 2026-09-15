@@ -21,7 +21,7 @@
   nd2fig が当てにしている列（前の契約に列挙）は変えない。`output/allfields_both/` は比較の元なので上書きしない（新しい出力は別名）
 - **検証コマンド**: 前の契約と同じ（pytest は `s2-aggregate-x64`、run は `cellpose-x64`）
 - **予算の目安**: 半日。相見積もりは取らない（Shogo が「推奨案で実装して目視確認する」と決めた。閾値の値は Shogo の判断）
-- **状態**: ACTIVE
+- **状態**: ACTIVE → **Shogo の確認待ち**（全 25 視野の出力済み `output/allfields_v3/`）
 
 ## 決めたこと・分かったこと
 
@@ -49,8 +49,40 @@
 
 ## CHECKPOINT(最新のみ・≤10行 — 書式: 済／次の一手／未解決・注意／検証)
 
-- **済**: 後処理のバグ修正＋`min_z_extent_planes: 3`（commit 2d843ee, 8d977f8）、`intensity_ratio` 方式と第 3 区分 double_signal（4a6fa04）、review の色分けパネル（ccc0c11）、下限を目視で確定（2e10571: 緑 250・赤 60、比 0.03 / 0.75）。2 視野の試行 `output/twofield_v3/`（旧下限 150/100）を Shogo が色分け画像と単色画像で確認
-- **決めたこと（2026-09-15、Shogo）**: 規則は固定し、ファイルごとに決めるのは 4 つの値（緑・赤の下限、比の 2 境界）と粒の面数だけ。両方光る細胞は「漏れ（比 ≥ 0.75 → mCherry）」と「死細胞の疑い（間 → double_signal）」に分ける。緑 100〜235 の薄い輪の細胞は GFP 発現とは数えない
-- **次の一手**: 全 25 視野を `output/allfields_v3/` に再実行中（2026-09-15 13 時台開始、約 45 分）。終わったら視野ごとの表（GFP / mCherry / 両方 / なし、接触、混合指数）と除外された物体の数をこの文書に書き、nd2fig へ渡す出力先を CHECKPOINT に書く
-- **未解決/注意**: (1) 「両方」＋「なし」で視野の半分前後になり、集団間の接触は視野あたり数本。混合指数は視野単位では不安定で、25 視野を束ねて評価する必要がある。(2) 死細胞かどうかはこの ND2 では決められない（Notion「死細胞の自家蛍光と判定方法」）。次の撮像で遠赤の生死色素か透過光を足すと確かめられる。(3) 別の ND2 では 4 つの値を測り直す
-- **検証**: pytest 545 passed / 3 skipped（既定）。目視: `twofield_v3/review/`、scratchpad の focus_*_v2.png / green_check_field000.png / red_dark_vs_marginal.png
+- **済**: 規則を固定し下限を目視で確定（緑 250・赤 60、比 0.03 / 0.75、粒は Z 3 面未満で除外。commit 2e10571）。**全 25 視野を `output/allfields_v3/` に出した**（2026-09-15 17:35〜21:08 JST の 3 時間 33 分。前回の 46 分より遅いのは PC の他の負荷か省電力のため。run_id `d65ebc789d5a49f1863b55f3173559f1`、warnings 0）。review 画像 25 枚（集団の色分けパネル付き）も出力済み
+- **nd2fig への出力先**: `output/allfields_v3/measurements/`（`objects.csv`・`aggregates.csv`・`contacts.csv`・`field_summary.csv`）と `output/allfields_v3/run_manifest.json`。列は前の契約のとおり。**追加列**: `objects.csv` に `pop_intensity.green`・`pop_intensity.red`・`pop_ratio`、`population` に新しい値 `double_signal`（両方光る細胞）。`output/allfields_both/` は旧（比較用）
+- **次の一手**: Shogo が下の表と `output/allfields_v3/review/` を見る。混合指数の評価単位（視野か、25 視野を束ねるか）を決める。nd2fig の橋（Phase 7）はこの出力を読む
+- **未解決/注意**: (1) 集団間の接触は 25 視野で 13 本、異種は 3 本。視野単位の混合指数は 2 視野でしか出ない（`single_population` 23）。**このデータでは混合指数は視野単位では成立しない**。25 視野を束ねた異種接触の割合は 3/13 = 0.23。(2) 「両方」473 個・「なし」599 個で細胞の 58% が集団に入らない。(3) 別の ND2 では 5 つの値を測り直す。(4) 死細胞かどうかは色素か透過光が無いと決められない
+- **検証**: pytest 545 passed / 3 skipped。目視: field000/001 の色分け画像（scratchpad の focus_*_v2 / green_check / red_dark_vs_marginal）。数: 50 µm³ 未満の物体 0、Z 端に触れない 2 面以下の物体 0（除外が効いている）
+
+## 全視野の結果（`output/allfields_v3/`、緑 250・赤 60・比 0.03/0.75、粒 3 面未満除外）
+
+| 視野 | 細胞数（旧） | GFP | mCherry | 両方 | なし | 異種接触（有効） | 集団間の接触の総数 | mixing / qc |
+|---|---|---|---|---|---|---|---|---|
+| field000 | 92（113） | 25 | 6 | 31 | 30 | 1 | 2 | 1.33 |
+| field001 | 73（104） | 22 | 6 | 18 | 27 | 0 | 0 | single_population |
+| field002 | 81（99） | 26 | 3 | 15 | 37 | 0 | 0 | single_population |
+| field003 | 77（96） | 22 | 5 | 28 | 22 | 0 | 0 | single_population |
+| field004 | 80（108） | 28 | 8 | 26 | 18 | 0 | 0 | single_population |
+| field005 | 63（80） | 17 | 2 | 26 | 18 | 0 | 0 | single_population |
+| field006 | 86（106） | 25 | 9 | 19 | 33 | 0 | 0 | single_population |
+| field007 | 63（78） | 25 | 3 | 15 | 20 | 0 | 0 | single_population |
+| field008 | 71（97） | 24 | 3 | 22 | 22 | 0 | 1 | single_population |
+| field009 | 85（119） | 29 | 8 | 30 | 18 | 0 | 1 | single_population |
+| field010 | 78（107） | 28 | 1 | 21 | 28 | 0 | 0 | single_population |
+| field011 | 74（94） | 23 | 3 | 11 | 37 | 0 | 0 | single_population |
+| field012 | 78（109） | 36 | 7 | 12 | 23 | 0 | 1 | single_population |
+| field013 | 64（79） | 22 | 3 | 12 | 27 | 0 | 1 | single_population |
+| field014 | 56（71） | 23 | 5 | 11 | 17 | 0 | 1 | single_population |
+| field015 | 67（86） | 33 | 6 | 13 | 15 | 0 | 2 | single_population |
+| field016 | 83（107） | 34 | 4 | 19 | 26 | 0 | 0 | single_population |
+| field017 | 80（103） | 21 | 8 | 28 | 23 | 2 | 2 | 2.00 |
+| field018 | 74（104） | 30 | 2 | 14 | 28 | 0 | 0 | single_population |
+| field019 | 72（100） | 29 | 4 | 20 | 19 | 0 | 2 | single_population |
+| field020 | 60（75） | 25 | 3 | 6 | 26 | 0 | 0 | single_population |
+| field021 | 62（84） | 23 | 6 | 21 | 12 | 0 | 0 | single_population |
+| field022 | 83（103） | 22 | 5 | 27 | 29 | 0 | 0 | single_population |
+| field023 | 77（99） | 27 | 9 | 16 | 25 | 0 | 0 | single_population |
+| field024 | 62（87） | 26 | 5 | 12 | 19 | 0 | 0 | single_population |
+
+合計: 1841 細胞（旧 2408。567 個が粒・薄い物体として除外）。GFP 645、mCherry 124、両方 473、なし 599。
