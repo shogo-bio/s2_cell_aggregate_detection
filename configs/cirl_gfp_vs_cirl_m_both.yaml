@@ -83,7 +83,12 @@ measurement:
   # of the mixing index. Floors can be overridden per field under per_field.
   population:
     method: intensity_ratio
-    min_intensity_above_background: {green: 150, red: 100}
+    # Floors decided by eye on field000 (2026-09-15): cells with green 100-235
+    # counts above background show only a faint membrane ring and were judged
+    # too dim to count as Cirl-GFP expressers; clearly expressing cells start
+    # around 350. Red: cells with no red sit below 20 counts, so 60 keeps the
+    # faint-but-real red while staying above the truly dark ones.
+    min_intensity_above_background: {green: 250, red: 60}
     ratio_low: 0.03
     ratio_high: 0.75
     double_label: double_signal

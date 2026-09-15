@@ -224,7 +224,7 @@ class TestConfig:
         cfg = load_config(Path("configs/cirl_gfp_vs_cirl_m_both.yaml"))
         pop = cfg.measurement.population
         assert pop.method == "intensity_ratio"
-        assert pop.min_intensity_above_background == {"green": 150, "red": 100}
+        assert pop.min_intensity_above_background == {"green": 250, "red": 60}
         assert cfg.segmentation.min_z_extent_planes == 3
 
 
