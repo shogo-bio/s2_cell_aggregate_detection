@@ -49,7 +49,8 @@
 
 ## CHECKPOINT(最新のみ・≤10行 — 書式: 済／次の一手／未解決・注意／検証)
 
-- **済**: 後処理のバグ修正と `min_z_extent_planes`（`postprocess.filter_by_z_extent`、テスト 7 本）、review の集団別パネル（実装済み、未 commit）
-- **次の一手**: Shogo の答え（二重陽性の扱い）を待って `measurement.population` の閾値の形を決める → 実装・テスト → 2 視野 → 目視 → 全視野
-- **未解決/注意**: 上の「未解決」。閾値を入れると GFP 集団は 1642 → 約 1430、未割り当ては 41 → 約 780 になる見込み（緑 150 / 赤 100 のとき）
-- **検証**: pytest（部分）69 passed + 新規 7 passed
+- **済**: 後処理のバグ修正＋`min_z_extent_planes: 3`（commit 2d843ee, 8d977f8）、`intensity_ratio` 方式と第 3 区分 double_signal（4a6fa04）、review の色分けパネル（ccc0c11）、下限を目視で確定（2e10571: 緑 250・赤 60、比 0.03 / 0.75）。2 視野の試行 `output/twofield_v3/`（旧下限 150/100）を Shogo が色分け画像と単色画像で確認
+- **決めたこと（2026-09-15、Shogo）**: 規則は固定し、ファイルごとに決めるのは 4 つの値（緑・赤の下限、比の 2 境界）と粒の面数だけ。両方光る細胞は「漏れ（比 ≥ 0.75 → mCherry）」と「死細胞の疑い（間 → double_signal）」に分ける。緑 100〜235 の薄い輪の細胞は GFP 発現とは数えない
+- **次の一手**: 全 25 視野を `output/allfields_v3/` に再実行中（2026-09-15 13 時台開始、約 45 分）。終わったら視野ごとの表（GFP / mCherry / 両方 / なし、接触、混合指数）と除外された物体の数をこの文書に書き、nd2fig へ渡す出力先を CHECKPOINT に書く
+- **未解決/注意**: (1) 「両方」＋「なし」で視野の半分前後になり、集団間の接触は視野あたり数本。混合指数は視野単位では不安定で、25 視野を束ねて評価する必要がある。(2) 死細胞かどうかはこの ND2 では決められない（Notion「死細胞の自家蛍光と判定方法」）。次の撮像で遠赤の生死色素か透過光を足すと確かめられる。(3) 別の ND2 では 4 つの値を測り直す
+- **検証**: pytest 545 passed / 3 skipped（既定）。目視: `twofield_v3/review/`、scratchpad の focus_*_v2.png / green_check_field000.png / red_dark_vs_marginal.png
